@@ -209,6 +209,13 @@ async fn process_authorization_query(
     Ok((request, query))
 }
 
+/// Build a query string from a HashMap of parameters
+fn build_query_string(params: &std::collections::HashMap<String, String>) -> String {
+    url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(params.iter())
+        .finish()
+}
+
 /// Render the login form when no login_hint is provided
 async fn render_login_form(
     state: AppState,
@@ -252,6 +259,30 @@ async fn render_login_form(
         query_params.insert("prompt".to_string(), prompt.clone());
     }
 
+    // Choose template based on prompt parameter
+    let is_app_password = query.prompt.as_deref() == Some("app-password");
+
+    // Build alternate auth URL for switching between methods
+    let mut alt_query_params = query_params.clone();
+    if is_app_password {
+        alt_query_params.remove("prompt");
+    } else {
+        alt_query_params.insert("prompt".to_string(), "app-password".to_string());
+    }
+    let alt_query_string = build_query_string(&alt_query_params);
+
+    let (alt_auth_url, alt_auth_label) = if is_app_password {
+        (
+            format!("/oauth/authorize?{}", alt_query_string),
+            "sign in with ATProtocol OAuth".to_string(),
+        )
+    } else {
+        (
+            format!("/oauth/authorize?{}", alt_query_string),
+            "sign in with an app password".to_string(),
+        )
+    };
+
     let template_data = json!({
         "title": "AIP - ATProtocol Identity Provider",
         "version": state.config.version,
@@ -259,10 +290,11 @@ async fn render_login_form(
         "client_name": query.client_id, // TODO: Look up actual client name from storage
         "scope": request.scope,
         "redirect_uri": request.redirect_uri,
+        "alt_auth_url": alt_auth_url,
+        "alt_auth_label": alt_auth_label,
     });
 
-    // Choose template based on prompt parameter
-    let template_name = if query.prompt.as_deref() == Some("app-password-login") {
+    let template_name = if is_app_password {
         "login_app_password.html"
     } else {
         "login.html"

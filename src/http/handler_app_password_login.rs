@@ -169,6 +169,13 @@ pub async fn handle_app_password_login(
     }
 }
 
+/// Build a query string from a HashMap of parameters
+fn build_query_string(params: &HashMap<String, String>) -> String {
+    url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(params.iter())
+        .finish()
+}
+
 /// Render the app-password login form with an error message
 fn render_error(error: &str, form: &AppPasswordLoginForm, state: &AppState) -> Response {
     // Reconstruct query_params for hidden fields
@@ -205,6 +212,13 @@ fn render_error(error: &str, form: &AppPasswordLoginForm, state: &AppState) -> R
         query_params.insert("prompt".to_string(), prompt.clone());
     }
 
+    // Build alternate auth URL for switching to handle-based OAuth
+    let mut alt_query_params = query_params.clone();
+    alt_query_params.remove("prompt"); // Remove prompt to go to handle form
+    let alt_query_string = build_query_string(&alt_query_params);
+    let alt_auth_url = format!("/oauth/authorize?{}", alt_query_string);
+    let alt_auth_label = "sign in with ATProtocol OAuth".to_string();
+
     let template_data = json!({
         "title": "AIP - ATProtocol Identity Provider",
         "version": state.config.version,
@@ -214,6 +228,8 @@ fn render_error(error: &str, form: &AppPasswordLoginForm, state: &AppState) -> R
         "redirect_uri": form.redirect_uri,
         "error": error,
         "login_hint_value": form.login_hint,
+        "alt_auth_url": alt_auth_url,
+        "alt_auth_label": alt_auth_label,
     });
 
     match state.template_env.render("login_app_password.html", &template_data) {
