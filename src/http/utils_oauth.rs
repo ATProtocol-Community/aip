@@ -10,6 +10,167 @@ use super::context::AppState;
 use crate::errors::OAuthError;
 use crate::oauth::auth_server::AuthorizationServer;
 
+/// Represents the type of login hint after normalization
+#[derive(Debug, Clone, PartialEq)]
+pub enum LoginHintType {
+    /// A resolved handle (e.g., "ngerakines.me")
+    Handle(String),
+    /// A DID (e.g., "did:plc:...")
+    Did(String),
+    /// An HTTPS URL to use as authorization server (e.g., "https://pds.example.com")
+    AuthorizationServer(String),
+}
+
+impl std::fmt::Display for LoginHintType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoginHintType::Handle(h) => write!(f, "{}", h),
+            LoginHintType::Did(d) => write!(f, "{}", d),
+            LoginHintType::AuthorizationServer(url) => write!(f, "{}", url),
+        }
+    }
+}
+
+/// Normalize login_hint values to typed result
+///
+/// Accepts handle, DID, AT-URI, HTTP URL, or HTTPS URL values and normalizes them:
+/// - Handle inputs may have `@` or `at://` prefix which will be stripped
+/// - DID inputs may have `at://` prefix which will be stripped
+/// - AT-URIs with paths will have the path stripped (only authority is used)
+/// - HTTP URLs will have hostname extracted and treated as potential handle
+/// - HTTPS URLs will be normalized to protocol + hostname + port
+///
+/// # Examples
+/// ```ignore
+/// normalize_login_hint_typed("ngerakines.me") -> Ok(Handle("ngerakines.me"))
+/// normalize_login_hint_typed("@ngerakines.me") -> Ok(Handle("ngerakines.me"))
+/// normalize_login_hint_typed("nick") -> Ok(Handle("nick.bsky.social"))
+/// normalize_login_hint_typed("did:plc:abc123") -> Ok(Did("did:plc:abc123"))
+/// normalize_login_hint_typed("at://did:plc:abc123/path") -> Ok(Did("did:plc:abc123"))
+/// normalize_login_hint_typed("https://pds.example.com") -> Ok(AuthorizationServer("https://pds.example.com"))
+/// normalize_login_hint_typed("http://ngerakines.me") -> Ok(Handle("ngerakines.me"))
+/// ```
+pub fn normalize_login_hint_typed(login_hint: &str) -> Result<LoginHintType, OAuthError> {
+    let trimmed = login_hint.trim();
+
+    if trimmed.is_empty() {
+        return Err(OAuthError::InvalidRequest(
+            "Login hint cannot be empty".to_string(),
+        ));
+    }
+
+    // Handle HTTP URLs first - extract hostname and treat as potential handle
+    if trimmed.starts_with("http://") {
+        match url::Url::parse(trimmed) {
+            Ok(url) => {
+                if let Some(host) = url.host_str() {
+                    // Treat the hostname as a potential handle
+                    return normalize_as_handle(host);
+                }
+                return Err(OAuthError::InvalidRequest(
+                    "Invalid HTTP URL: missing host".to_string(),
+                ));
+            }
+            Err(_) => {
+                return Err(OAuthError::InvalidRequest(
+                    "Invalid HTTP URL format".to_string(),
+                ));
+            }
+        }
+    }
+
+    // Handle HTTPS URLs - treat as authorization server
+    if trimmed.starts_with("https://") {
+        match url::Url::parse(trimmed) {
+            Ok(url) => {
+                if url.scheme() != "https" {
+                    return Err(OAuthError::InvalidRequest(
+                        "Only HTTPS URLs are allowed for authorization servers".to_string(),
+                    ));
+                }
+
+                // Build URL with only scheme, host, and optional port
+                let mut normalized = String::from("https://");
+                if let Some(host) = url.host_str() {
+                    normalized.push_str(host);
+                    if let Some(port) = url.port() {
+                        normalized.push(':');
+                        normalized.push_str(&port.to_string());
+                    }
+                    return Ok(LoginHintType::AuthorizationServer(normalized));
+                }
+                return Err(OAuthError::InvalidRequest(
+                    "Invalid HTTPS URL: missing host".to_string(),
+                ));
+            }
+            Err(_) => {
+                return Err(OAuthError::InvalidRequest(
+                    "Invalid HTTPS URL format".to_string(),
+                ));
+            }
+        }
+    }
+
+    // Strip @ and at:// prefixes
+    let stripped = strip_handle_prefixes(trimmed);
+
+    // If after stripping we have a path (from AT-URI), extract just the authority
+    let authority = if let Some(slash_pos) = stripped.find('/') {
+        &stripped[..slash_pos]
+    } else {
+        stripped
+    };
+
+    // Check if it's a DID
+    if authority.starts_with("did:") {
+        return normalize_as_did(authority);
+    }
+
+    // Otherwise, treat it as a handle
+    normalize_as_handle(authority)
+}
+
+/// Normalize a string as a DID
+fn normalize_as_did(did: &str) -> Result<LoginHintType, OAuthError> {
+    if did.starts_with("did:plc:") {
+        if !is_valid_did_method_plc(did) {
+            return Err(OAuthError::InvalidRequest(
+                "Invalid DID PLC format".to_string(),
+            ));
+        }
+    } else if did.starts_with("did:web:") {
+        if !is_valid_did_method_web(did, true) {
+            return Err(OAuthError::InvalidRequest(
+                "Invalid DID Web format".to_string(),
+            ));
+        }
+    } else {
+        return Err(OAuthError::InvalidRequest(
+            "Unsupported DID method".to_string(),
+        ));
+    }
+
+    Ok(LoginHintType::Did(did.to_string()))
+}
+
+/// Normalize a string as a handle
+fn normalize_as_handle(handle: &str) -> Result<LoginHintType, OAuthError> {
+    // If it doesn't contain a dot, append .bsky.social
+    let normalized = if !handle.contains('.') {
+        format!("{}.bsky.social", handle)
+    } else {
+        handle.to_string()
+    };
+
+    if !(is_valid_hostname(&normalized) && normalized.contains('.')) {
+        return Err(OAuthError::InvalidRequest(
+            "Invalid handle format: must be a valid hostname".to_string(),
+        ));
+    }
+
+    Ok(LoginHintType::Handle(normalized))
+}
+
 /// Normalize login_hint values to ensure consistent format
 ///
 /// Accepts handle, DID, or HTTPS URL values and normalizes them:
@@ -27,87 +188,7 @@ use crate::oauth::auth_server::AuthorizationServer;
 /// normalize_login_hint("https://example.com") -> Ok("https://example.com")
 /// ```
 pub fn normalize_login_hint(login_hint: &str) -> Result<String, OAuthError> {
-    let trimmed = login_hint.trim();
-
-    if trimmed.is_empty() {
-        return Err(OAuthError::InvalidRequest(
-            "Login hint cannot be empty".to_string(),
-        ));
-    }
-
-    let trimmed = strip_handle_prefixes(trimmed);
-
-    // Check if it's an HTTPS URL
-    if trimmed.starts_with("https://") {
-        // Parse URL to ensure it's valid and extract only protocol + hostname + port
-        match url::Url::parse(trimmed) {
-            Ok(url) => {
-                if url.scheme() != "https" {
-                    return Err(OAuthError::InvalidRequest(
-                        "Only HTTPS URLs are allowed".to_string(),
-                    ));
-                }
-
-                // Build URL with only scheme, host, and optional port
-                let mut normalized = String::from("https://");
-                if let Some(host) = url.host_str() {
-                    normalized.push_str(host);
-                    if let Some(port) = url.port() {
-                        normalized.push(':');
-                        normalized.push_str(&port.to_string());
-                    }
-                    Ok(normalized)
-                } else {
-                    Err(OAuthError::InvalidRequest(
-                        "Invalid HTTPS URL: missing host".to_string(),
-                    ))
-                }
-            }
-            Err(_) => Err(OAuthError::InvalidRequest(
-                "Invalid HTTPS URL format".to_string(),
-            )),
-        }
-    }
-    // Check if it's a DID
-    else if trimmed.starts_with("did:") {
-        // Validate DIDs using atproto_identity validation functions
-        if trimmed.starts_with("did:plc:") {
-            if !is_valid_did_method_plc(trimmed) {
-                return Err(OAuthError::InvalidRequest(
-                    "Invalid DID PLC format".to_string(),
-                ));
-            }
-        } else if trimmed.starts_with("did:web:") {
-            if !is_valid_did_method_web(trimmed, true) {
-                return Err(OAuthError::InvalidRequest(
-                    "Invalid DID Web format".to_string(),
-                ));
-            }
-        } else {
-            return Err(OAuthError::InvalidRequest(
-                "Unsupported DID method".to_string(),
-            ));
-        }
-
-        Ok(trimmed.to_string())
-    }
-    // Otherwise, treat it as a handle
-    else {
-        // If it doesn't contain a dot, append .bsky.social
-        let handle = if !trimmed.contains('.') {
-            format!("{}.bsky.social", trimmed)
-        } else {
-            trimmed.to_string()
-        };
-
-        if !(is_valid_hostname(&handle) && handle.contains('.')) {
-            return Err(OAuthError::InvalidRequest(
-                "Invalid handle format".to_string(),
-            ));
-        }
-
-        Ok(handle)
-    }
+    normalize_login_hint_typed(login_hint).map(|t| t.to_string())
 }
 
 /// Create base authorization server
@@ -420,12 +501,137 @@ mod tests {
         assert!(normalize_login_hint("did:x").is_err());
         assert!(normalize_login_hint("at://did:").is_err());
 
-        // Non-HTTPS URLs
-        assert!(normalize_login_hint("http://example.com").is_err());
+        // FTP URLs are not supported
         assert!(normalize_login_hint("ftp://example.com").is_err());
 
         // Invalid URL format
         assert!(normalize_login_hint("https://").is_err());
         assert!(normalize_login_hint("https://[invalid").is_err());
+    }
+
+    #[test]
+    fn test_normalize_login_hint_http_url() {
+        // HTTP URLs should extract hostname and treat as handle
+        assert_eq!(
+            normalize_login_hint("http://ngerakines.me").unwrap(),
+            "ngerakines.me"
+        );
+
+        // HTTP URL with path - hostname is extracted
+        assert_eq!(
+            normalize_login_hint("http://example.com/path").unwrap(),
+            "example.com"
+        );
+
+        // HTTP URL with port - hostname is extracted (port ignored for handle)
+        assert_eq!(
+            normalize_login_hint("http://example.com:8080").unwrap(),
+            "example.com"
+        );
+    }
+
+    #[test]
+    fn test_normalize_login_hint_at_uri_with_path() {
+        // AT-URI with path should extract just the authority (DID)
+        assert_eq!(
+            normalize_login_hint("at://did:plc:7iza6de2dwap2sbkpav7c6c6/app.bsky.feed.post/abc123").unwrap(),
+            "did:plc:7iza6de2dwap2sbkpav7c6c6"
+        );
+
+        // AT-URI with path should extract just the authority (handle)
+        assert_eq!(
+            normalize_login_hint("at://ngerakines.me/app.bsky.feed.post/abc123").unwrap(),
+            "ngerakines.me"
+        );
+    }
+
+    #[test]
+    fn test_normalize_login_hint_typed_handles() {
+        // Basic handle
+        assert_eq!(
+            normalize_login_hint_typed("ngerakines.me").unwrap(),
+            LoginHintType::Handle("ngerakines.me".to_string())
+        );
+
+        // Handle with @ prefix
+        assert_eq!(
+            normalize_login_hint_typed("@ngerakines.me").unwrap(),
+            LoginHintType::Handle("ngerakines.me".to_string())
+        );
+
+        // Partial handle gets .bsky.social appended
+        assert_eq!(
+            normalize_login_hint_typed("nick").unwrap(),
+            LoginHintType::Handle("nick.bsky.social".to_string())
+        );
+
+        // Partial handle with dashes
+        assert_eq!(
+            normalize_login_hint_typed("nick-test").unwrap(),
+            LoginHintType::Handle("nick-test.bsky.social".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_login_hint_typed_dids() {
+        // DID PLC
+        assert_eq!(
+            normalize_login_hint_typed("did:plc:7iza6de2dwap2sbkpav7c6c6").unwrap(),
+            LoginHintType::Did("did:plc:7iza6de2dwap2sbkpav7c6c6".to_string())
+        );
+
+        // DID Web
+        assert_eq!(
+            normalize_login_hint_typed("did:web:example.com").unwrap(),
+            LoginHintType::Did("did:web:example.com".to_string())
+        );
+
+        // DID with at:// prefix
+        assert_eq!(
+            normalize_login_hint_typed("at://did:plc:7iza6de2dwap2sbkpav7c6c6").unwrap(),
+            LoginHintType::Did("did:plc:7iza6de2dwap2sbkpav7c6c6".to_string())
+        );
+
+        // DID with at:// prefix and path (path stripped)
+        assert_eq!(
+            normalize_login_hint_typed("at://did:plc:7iza6de2dwap2sbkpav7c6c6/some/path").unwrap(),
+            LoginHintType::Did("did:plc:7iza6de2dwap2sbkpav7c6c6".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_login_hint_typed_authorization_server() {
+        // HTTPS URL becomes AuthorizationServer
+        assert_eq!(
+            normalize_login_hint_typed("https://pds.example.com").unwrap(),
+            LoginHintType::AuthorizationServer("https://pds.example.com".to_string())
+        );
+
+        // HTTPS URL with port
+        assert_eq!(
+            normalize_login_hint_typed("https://pds.example.com:8080").unwrap(),
+            LoginHintType::AuthorizationServer("https://pds.example.com:8080".to_string())
+        );
+
+        // HTTPS URL with path (path stripped)
+        assert_eq!(
+            normalize_login_hint_typed("https://pds.example.com/xrpc/something").unwrap(),
+            LoginHintType::AuthorizationServer("https://pds.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_normalize_login_hint_typed_http_to_handle() {
+        // HTTP URL extracts hostname as Handle
+        assert_eq!(
+            normalize_login_hint_typed("http://ngerakines.me").unwrap(),
+            LoginHintType::Handle("ngerakines.me".to_string())
+        );
+
+        // HTTP URL with path - hostname extracted
+        assert_eq!(
+            normalize_login_hint_typed("http://example.com/path/to/resource").unwrap(),
+            LoginHintType::Handle("example.com".to_string())
+        );
     }
 }
