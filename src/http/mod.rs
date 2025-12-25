@@ -2,6 +2,7 @@
 
 pub mod context;
 mod handler_app_password;
+mod handler_app_password_login;
 mod handler_atprotocol_client_metadata;
 mod handler_atprotocol_oauth_authorize;
 mod handler_atprotocol_oauth_callback;

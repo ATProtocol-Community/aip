@@ -13,6 +13,7 @@ use tracing::Span;
 use super::{
     context::AppState,
     handler_app_password::{create_app_password_handler, get_app_password_handler},
+    handler_app_password_login::handle_app_password_login,
     handler_atprotocol_client_metadata::handle_atpoauth_client_metadata,
     handler_atprotocol_oauth_authorize::handle_oauth_authorize,
     handler_atprotocol_oauth_callback::handle_atpoauth_callback,
@@ -54,6 +55,7 @@ pub fn build_router(ctx: AppState) -> Router {
     // Create OAuth routes for ATProtocol-backed authentication
     let mut oauth_routes = Router::new()
         .route("/authorize", get(handle_oauth_authorize))
+        .route("/authorize/app-password", post(handle_app_password_login))
         .route("/token", post(handle_oauth_token))
         .route("/device", post(device_authorization_handler))
         .route("/userinfo", get(get_userinfo_handler))

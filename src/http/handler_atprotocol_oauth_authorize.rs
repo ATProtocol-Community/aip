@@ -248,6 +248,9 @@ async fn render_login_form(
     if let Some(ref nonce) = query.nonce {
         query_params.insert("nonce".to_string(), nonce.clone());
     }
+    if let Some(ref prompt) = query.prompt {
+        query_params.insert("prompt".to_string(), prompt.clone());
+    }
 
     let template_data = json!({
         "title": "AIP - ATProtocol Identity Provider",
@@ -258,7 +261,14 @@ async fn render_login_form(
         "redirect_uri": request.redirect_uri,
     });
 
-    match state.template_env.render("login.html", &template_data) {
+    // Choose template based on prompt parameter
+    let template_name = if query.prompt.as_deref() == Some("app-password-login") {
+        "login_app_password.html"
+    } else {
+        "login.html"
+    };
+
+    match state.template_env.render(template_name, &template_data) {
         Ok(html) => Ok(Html(html).into_response()),
         Err(e) => {
             let error_response = json!({
@@ -329,6 +339,7 @@ mod tests {
             request_uri: None,
             login_hint: None,
             nonce: None,
+            prompt: None,
         };
 
         let config = create_test_config();
@@ -363,6 +374,7 @@ mod tests {
             request_uri: None,
             login_hint: None,
             nonce: None,
+            prompt: None,
         };
 
         let config = create_test_config();
@@ -394,6 +406,7 @@ mod tests {
             request_uri: None,
             login_hint: None,
             nonce: None,
+            prompt: None,
         };
 
         let config = create_test_config();
@@ -430,6 +443,7 @@ mod tests {
             request_uri: Some("urn:ietf:params:oauth:request_uri:invalid123".to_string()),
             login_hint: None,
             nonce: None,
+            prompt: None,
         };
 
         let config = create_test_config();
@@ -461,6 +475,7 @@ mod tests {
             request_uri: None,
             login_hint: None,
             nonce: None,
+            prompt: None,
         };
 
         let config = create_test_config();
@@ -492,6 +507,7 @@ mod tests {
             request_uri: None,
             login_hint: None,
             nonce: None,
+            prompt: None,
         };
 
         let config = create_test_config();

@@ -754,6 +754,7 @@ pub struct AuthorizeQuery {
     pub request_uri: Option<String>, // For PAR (RFC 9126)
     pub login_hint: Option<String>,
     pub nonce: Option<String>,
+    pub prompt: Option<String>, // For app-password login: "app-password-login"
 }
 
 impl From<AuthorizeQuery> for AuthorizationRequest {
