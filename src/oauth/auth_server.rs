@@ -91,14 +91,32 @@ impl AuthorizationServer {
             )));
         }
 
-        // Validate scope
+        // Validate scope using normalized comparison
         if let Some(ref requested_scope) = request.scope
             && let Some(ref client_scope) = client.scope
         {
-            let requested_scopes = parse_scope(requested_scope);
-            let allowed_scopes = parse_scope(client_scope);
+            let parsed_requested =
+                atproto_oauth::scopes::Scope::parse_multiple_reduced(requested_scope)
+                    .map_err(|e| {
+                        OAuthError::InvalidScope(format!("Invalid scope format: {}", e))
+                    })?;
 
-            if !requested_scopes.is_subset(&allowed_scopes) {
+            let parsed_allowed =
+                atproto_oauth::scopes::Scope::parse_multiple_reduced(client_scope).map_err(
+                    |e| OAuthError::InvalidScope(format!("Invalid client scope format: {}", e)),
+                )?;
+
+            let requested_normalized: std::collections::HashSet<String> = parsed_requested
+                .iter()
+                .map(|s| s.to_string_normalized())
+                .collect();
+
+            let allowed_normalized: std::collections::HashSet<String> = parsed_allowed
+                .iter()
+                .map(|s| s.to_string_normalized())
+                .collect();
+
+            if !requested_normalized.is_subset(&allowed_normalized) {
                 return Err(OAuthError::InvalidScope(
                     "Requested scope exceeds allowed scope".to_string(),
                 ));
@@ -371,13 +389,33 @@ impl AuthorizationServer {
             ));
         }
 
-        // Validate scope
+        // Validate scope using normalized comparison
         let granted_scope = if let Some(ref requested_scope) = request.scope {
             if let Some(ref client_scope) = client.scope {
-                let requested_scopes = parse_scope(requested_scope);
-                let allowed_scopes = parse_scope(client_scope);
+                let parsed_requested =
+                    atproto_oauth::scopes::Scope::parse_multiple_reduced(requested_scope)
+                        .map_err(|e| {
+                            OAuthError::InvalidScope(format!("Invalid scope format: {}", e))
+                        })?;
 
-                if !requested_scopes.is_subset(&allowed_scopes) {
+                let parsed_allowed =
+                    atproto_oauth::scopes::Scope::parse_multiple_reduced(client_scope).map_err(
+                        |e| {
+                            OAuthError::InvalidScope(format!("Invalid client scope format: {}", e))
+                        },
+                    )?;
+
+                let requested_normalized: std::collections::HashSet<String> = parsed_requested
+                    .iter()
+                    .map(|s| s.to_string_normalized())
+                    .collect();
+
+                let allowed_normalized: std::collections::HashSet<String> = parsed_allowed
+                    .iter()
+                    .map(|s| s.to_string_normalized())
+                    .collect();
+
+                if !requested_normalized.is_subset(&allowed_normalized) {
                     return Err(OAuthError::InvalidScope(
                         "Requested scope exceeds allowed scope".to_string(),
                     ));
@@ -1170,7 +1208,7 @@ mod tests {
             redirect_uris: vec!["https://example.com/callback".to_string()],
             grant_types: vec![GrantType::AuthorizationCode],
             response_types: vec![ResponseType::Code],
-            scope: Some("read write".to_string()),
+            scope: Some("atproto transition:generic".to_string()),
             token_endpoint_auth_method: ClientAuthMethod::ClientSecretBasic,
             client_type: ClientType::Confidential,
             application_type: None,
@@ -1193,7 +1231,7 @@ mod tests {
             response_type: vec![ResponseType::Code],
             client_id: "test-client".to_string(),
             redirect_uri: "https://example.com/callback".to_string(),
-            scope: Some("read".to_string()),
+            scope: Some("atproto".to_string()),
             state: Some("test-state".to_string()),
             code_challenge: None,
             code_challenge_method: None,
@@ -1249,7 +1287,7 @@ mod tests {
 
         assert!(!token_response.access_token.is_empty());
         assert!(token_response.refresh_token.is_some());
-        assert_eq!(token_response.scope, Some("read".to_string()));
+        assert_eq!(token_response.scope, Some("atproto".to_string()));
     }
 
     #[tokio::test]
@@ -1281,7 +1319,7 @@ mod tests {
             redirect_uris: vec!["https://example.com/callback".to_string()],
             grant_types: vec![GrantType::AuthorizationCode, GrantType::ClientCredentials],
             response_types: vec![ResponseType::Code],
-            scope: Some("read write".to_string()),
+            scope: Some("atproto transition:generic".to_string()),
             token_endpoint_auth_method: ClientAuthMethod::PrivateKeyJwt,
             client_type: ClientType::Confidential,
             application_type: None,
@@ -1312,7 +1350,7 @@ mod tests {
             device_code: None,
             client_id: Some("test-private-key-jwt-client".to_string()),
             client_secret: None, // No secret for private_key_jwt
-            scope: Some("read write".to_string()),
+            scope: Some("atproto transition:generic".to_string()),
             client_assertion: None, // Will be in client_auth
             client_assertion_type: None,
         };

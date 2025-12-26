@@ -2,7 +2,7 @@
 name = "aip"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.90"
 
 [[bin]]
 name = "aip"
@@ -19,11 +19,11 @@ path = "src/lib.rs"
 [dependencies]
 axum = { version = "0.8" }
 
-atproto-identity = { version = "0.12.0", features = ["lru", "zeroize", "hickory-dns"] }
-atproto-oauth = { version = "0.12.0", features = ["lru", "zeroize", "hickory-dns"] }
-atproto-oauth-axum = { version = "0.12.0", features = ["zeroize"] }
-atproto-client = { version = "0.12.0" }
-atproto-xrpcs = { version = "0.12.0", features = ["hickory-dns"] }
+atproto-identity = { git = "https://tangled.org/@smokesignal.events/atproto-identity-rs", features = ["lru", "zeroize", "hickory-dns"] }
+atproto-oauth = { git = "https://tangled.org/@smokesignal.events/atproto-identity-rs", features = ["lru", "zeroize", "hickory-dns"] }
+atproto-oauth-axum = { git = "https://tangled.org/@smokesignal.events/atproto-identity-rs", features = ["zeroize"] }
+atproto-client = { git = "https://tangled.org/@smokesignal.events/atproto-identity-rs" }
+atproto-xrpcs = { git = "https://tangled.org/@smokesignal.events/atproto-identity-rs", features = ["hickory-dns"] }
 
 axum-template = { version = "3.0", features = ["minijinja"] }
 minijinja = { version = "2.7", features = ["builtins"] }

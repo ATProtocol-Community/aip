@@ -432,7 +432,7 @@ impl AuthorizationRequestStorage for PostgresOAuthStorage {
 }
 
 #[async_trait]
-impl atproto_identity::storage::DidDocumentStorage for PostgresOAuthStorage {
+impl atproto_identity::traits::DidDocumentStorage for PostgresOAuthStorage {
     async fn get_document_by_did(
         &self,
         did: &str,

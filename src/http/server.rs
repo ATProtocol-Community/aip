@@ -5,8 +5,8 @@ use axum::{
     routing::{get, post},
 };
 use std::time::Duration;
-use tower_http::{classify::ServerErrorsFailureClass, cors::Any};
 use tower_http::trace::DefaultMakeSpan;
+use tower_http::{classify::ServerErrorsFailureClass, cors::Any};
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use tracing::Span;
 
@@ -35,8 +35,9 @@ use super::{
         openid_configuration_handler,
     },
     handler_xrpc_clients::xrpc_clients_update_handler,
+    handler_xrpc_ready::xrpc_ready_handler,
 };
-use crate::http::middleware_auth::set_dpop_headers;
+use crate::http::{handler_well_known::did_handler, middleware_auth::set_dpop_headers};
 
 /// Build the application router
 pub fn build_router(ctx: AppState) -> Router {
@@ -82,6 +83,7 @@ pub fn build_router(ctx: AppState) -> Router {
 
     // Create well-known discovery routes
     let well_known_routes = Router::new()
+        .route("/did.json", get(did_handler))
         .route(
             "/oauth-protected-resource",
             get(oauth_protected_resource_handler),
@@ -126,6 +128,7 @@ pub fn build_router(ctx: AppState) -> Router {
             "/xrpc/tools.graze.aip.clients.Update",
             post(xrpc_clients_update_handler),
         )
+        .route("/xrpc/tools.graze.aip.ready", get(xrpc_ready_handler))
         .nest_service("/static", ServeDir::new(&ctx.config.http_static_path))
         .layer(cors)
         .layer(TraceLayer::new_for_http())

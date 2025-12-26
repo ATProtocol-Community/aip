@@ -1,10 +1,6 @@
 //! Application state and request context management.
 
-use atproto_identity::{
-    key::{KeyData, KeyProvider},
-    resolve::SharedIdentityResolver,
-    storage::DidDocumentStorage,
-};
+use atproto_identity::{key::KeyData, resolve::SharedIdentityResolver, traits::DidDocumentStorage};
 use atproto_oauth::storage::OAuthRequestStorage;
 use axum::extract::FromRef;
 use axum_template::engine::Engine;
@@ -14,7 +10,7 @@ use crate::oauth::{
     atprotocol_bridge::{AtpOAuthSessionStorage, AuthorizationRequestStorage},
     clients::registration::ClientRegistrationService,
 };
-use crate::storage::traits::TransactionalStorage;
+use crate::storage::{traits::TransactionalStorage, KeyProvider};
 use crate::{config::Config, oauth::DPoPNonceProvider};
 
 #[cfg(feature = "reload")]

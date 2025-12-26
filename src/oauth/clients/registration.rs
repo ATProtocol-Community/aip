@@ -435,14 +435,14 @@ impl ClientRegistrationService {
 
         // Validate scope
         if let Some(ref scope) = request.scope {
+            tracing::warn!(?scope, "request.scope");
+            tracing::warn!(?scope, "request.scope");
             if !validate_scope(scope) {
                 return Err(ClientRegistrationError::InvalidClientMetadata(format!(
                     "Invalid scope: {}",
                     scope
                 )));
             }
-
-            let requested_scopes = parse_scope(scope);
 
             // Parse the scope string into Scope instances for validation
             let parsed_scopes = atproto_oauth::scopes::Scope::parse_multiple_reduced(scope)
@@ -459,10 +459,20 @@ impl ClientRegistrationService {
 
             // Validate against server's supported scopes if provided
             if let Some(supported_scopes) = supported_scopes {
-                let supported_scope_strings = supported_scopes.as_strings();
-                let server_supported_scopes = parse_scope(&supported_scope_strings.join(" "));
+                // Compare using normalized strings to handle different input formats
+                // (e.g., URL-encoded vs non-encoded query parameters)
+                let requested_normalized: std::collections::HashSet<String> = parsed_scopes
+                    .iter()
+                    .map(|s| s.to_string_normalized())
+                    .collect();
+                let supported_normalized: std::collections::HashSet<String> = supported_scopes
+                    .as_ref()
+                    .iter()
+                    .map(|s| s.to_string_normalized())
+                    .collect();
 
-                if !requested_scopes.is_subset(&server_supported_scopes) {
+                if !requested_normalized.is_subset(&supported_normalized) {
+                    let supported_scope_strings = supported_scopes.as_strings();
                     return Err(ClientRegistrationError::InvalidClientMetadata(format!(
                         "Requested scope '{}' contains unsupported scopes. Supported scopes: {}",
                         scope,

@@ -21,8 +21,8 @@ use aip::{
 use anyhow::Result;
 use atproto_identity::{
     resolve::{HickoryDnsResolver, InnerIdentityResolver, SharedIdentityResolver},
-    storage::DidDocumentStorage,
     storage_lru::LruDidDocumentStorage,
+    traits::DidDocumentStorage,
 };
 use atproto_oauth::{storage::OAuthRequestStorage, storage_lru::LruOAuthRequestStorage};
 use std::{env, num::NonZeroUsize, sync::Arc};

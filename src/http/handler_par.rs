@@ -210,12 +210,27 @@ fn validate_and_convert_par_request(
         let normalized_requested_scope =
             crate::oauth::scope_validation::compat_scopes(requested_scope);
 
-        let requested_scopes = crate::oauth::types::parse_scope(&normalized_requested_scope);
-        let supported_scopes =
-            crate::oauth::types::parse_scope(&config.oauth_supported_scopes.as_strings().join(" "));
+        // Parse requested scopes and convert to normalized strings for comparison
+        let parsed_requested =
+            atproto_oauth::scopes::Scope::parse_multiple_reduced(&normalized_requested_scope)
+                .map_err(|e| {
+                    OAuthError::InvalidScope(format!("Invalid scope format: {}", e))
+                })?;
+
+        let requested_normalized: std::collections::HashSet<String> = parsed_requested
+            .iter()
+            .map(|s| s.to_string_normalized())
+            .collect();
+
+        let supported_normalized: std::collections::HashSet<String> = config
+            .oauth_supported_scopes
+            .as_ref()
+            .iter()
+            .map(|s| s.to_string_normalized())
+            .collect();
 
         // First, validate against server's supported scopes
-        if !requested_scopes.is_subset(&supported_scopes) {
+        if !requested_normalized.is_subset(&supported_normalized) {
             return Err(OAuthError::InvalidScope(
                 "One or more requested scopes are not supported by this server".to_string(),
             ));
@@ -226,9 +241,19 @@ fn validate_and_convert_par_request(
             // Apply compat_scopes to client scope as well (from database)
             let normalized_client_scope =
                 crate::oauth::scope_validation::compat_scopes(client_scope);
-            let allowed_scopes = crate::oauth::types::parse_scope(&normalized_client_scope);
 
-            if !requested_scopes.is_subset(&allowed_scopes) {
+            let parsed_client =
+                atproto_oauth::scopes::Scope::parse_multiple_reduced(&normalized_client_scope)
+                    .map_err(|e| {
+                        OAuthError::InvalidScope(format!("Invalid client scope format: {}", e))
+                    })?;
+
+            let allowed_normalized: std::collections::HashSet<String> = parsed_client
+                .iter()
+                .map(|s| s.to_string_normalized())
+                .collect();
+
+            if !requested_normalized.is_subset(&allowed_normalized) {
                 return Err(OAuthError::InvalidScope(
                     "Requested scope exceeds allowed scope".to_string(),
                 ));

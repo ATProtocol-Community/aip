@@ -194,11 +194,25 @@ async fn process_authorization_query(
 
     // Validate scope against server's supported scopes for traditional OAuth requests
     if let Some(ref requested_scope) = request.scope {
-        let requested_scopes = crate::oauth::types::parse_scope(requested_scope);
-        let supported_scopes =
-            crate::oauth::types::parse_scope(&config.oauth_supported_scopes.as_strings().join(" "));
+        // Parse into Scope objects and compare normalized strings to handle format differences
+        let parsed_requested = atproto_oauth::scopes::Scope::parse_multiple_reduced(requested_scope)
+            .map_err(|e| serde_json::json!({
+                "error": "invalid_scope",
+                "error_description": format!("Invalid scope format: {}", e)
+            }))?;
 
-        if !requested_scopes.is_subset(&supported_scopes) {
+        let requested_normalized: std::collections::HashSet<String> = parsed_requested
+            .iter()
+            .map(|s| s.to_string_normalized())
+            .collect();
+        let supported_normalized: std::collections::HashSet<String> = config
+            .oauth_supported_scopes
+            .as_ref()
+            .iter()
+            .map(|s| s.to_string_normalized())
+            .collect();
+
+        if !requested_normalized.is_subset(&supported_normalized) {
             return Err(serde_json::json!({
                 "error": "invalid_scope",
                 "error_description": "One or more requested scopes are not supported by this server"

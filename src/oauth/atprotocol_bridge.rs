@@ -105,7 +105,7 @@ pub struct AtpBackedAuthorizationServer {
     /// ATProtocol OAuth session storage
     session_storage: Arc<dyn AtpOAuthSessionStorage>,
     /// DID document storage for resolved identities
-    document_storage: Arc<dyn atproto_identity::storage::DidDocumentStorage + Send + Sync>,
+    document_storage: Arc<dyn atproto_identity::traits::DidDocumentStorage + Send + Sync>,
     /// Authorization request storage
     authorization_request_storage: Arc<dyn AuthorizationRequestStorage>,
     /// External base URL for callbacks
@@ -121,7 +121,7 @@ impl AtpBackedAuthorizationServer {
         oauth_request_storage: Arc<dyn atproto_oauth::storage::OAuthRequestStorage>,
         client_config: atproto_oauth_axum::state::OAuthClientConfig,
         session_storage: Arc<dyn AtpOAuthSessionStorage>,
-        document_storage: Arc<dyn atproto_identity::storage::DidDocumentStorage + Send + Sync>,
+        document_storage: Arc<dyn atproto_identity::traits::DidDocumentStorage + Send + Sync>,
         authorization_request_storage: Arc<dyn AuthorizationRequestStorage>,
         external_base: String,
     ) -> Self {
@@ -151,7 +151,7 @@ impl AtpBackedAuthorizationServer {
     /// Get a reference to the document storage
     pub fn document_storage(
         &self,
-    ) -> &Arc<dyn atproto_identity::storage::DidDocumentStorage + Send + Sync> {
+    ) -> &Arc<dyn atproto_identity::traits::DidDocumentStorage + Send + Sync> {
         &self.document_storage
     }
 

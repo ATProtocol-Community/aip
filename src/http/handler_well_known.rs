@@ -7,6 +7,24 @@ use serde_json::{Value, json};
 
 use super::context::AppState;
 
+pub async fn did_handler(State(state): State<AppState>) -> Json<Value> {
+    Json(json!({
+        "@context": [
+            "https://www.w3.org/ns/did/v1",
+            "https://w3id.org/security/multikey/v1"
+        ],
+        "id": format!("did:web:{}", state.config.external_base.trim_start_matches("https://")),
+        "verificationMethod": [],
+        "service": [
+            {
+                "id": "#aip",
+                "type": "AIPService",
+                "serviceEndpoint": state.config.external_base
+            }
+        ]
+    }))
+}
+
 /// OAuth 2.0 Protected Resource Metadata handler
 /// GET /.well-known/oauth-protected-resource
 ///

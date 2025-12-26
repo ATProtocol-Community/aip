@@ -13,7 +13,7 @@ pub mod postgres;
 
 // Re-export commonly used types and traits
 pub use inmemory::{MemoryNonceStorage, MemoryOAuthStorage};
-pub use key_provider::SimpleKeyProvider;
+pub use key_provider::{KeyProvider, SimpleKeyProvider};
 pub use traits::*;
 
 #[cfg(feature = "postgres")]

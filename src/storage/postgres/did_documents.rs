@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
-use atproto_identity::{model::Document, storage::DidDocumentStorage};
+use atproto_identity::{model::Document, traits::DidDocumentStorage};
 use chrono::Utc;
 use sqlx::postgres::PgPool;
 
