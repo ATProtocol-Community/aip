@@ -738,8 +738,8 @@ impl TransactionalStorage for PostgresOAuthStorage {
 
         // Step 2: Store the access token
         let token_type_str = match access_token.token_type {
-            crate::oauth::types::TokenType::Bearer => "bearer",
-            crate::oauth::types::TokenType::DPoP => "dpop",
+            crate::oauth::types::TokenType::Bearer => "Bearer",
+            crate::oauth::types::TokenType::DPoP => "DPoP",
         };
         let session_iteration = access_token.session_iteration.map(|i| i as i32);
 
@@ -892,8 +892,8 @@ impl TransactionalStorage for PostgresOAuthStorage {
 
         // Step 2: Store the new access token
         let token_type_str = match new_access_token.token_type {
-            crate::oauth::types::TokenType::Bearer => "bearer",
-            crate::oauth::types::TokenType::DPoP => "dpop",
+            crate::oauth::types::TokenType::Bearer => "Bearer",
+            crate::oauth::types::TokenType::DPoP => "DPoP",
         };
         let session_iteration = new_access_token.session_iteration.map(|i| i as i32);
 

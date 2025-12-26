@@ -5,7 +5,7 @@ use axum::{
     routing::{get, post},
 };
 use std::time::Duration;
-use tower_http::classify::ServerErrorsFailureClass;
+use tower_http::{classify::ServerErrorsFailureClass, cors::Any};
 use tower_http::trace::DefaultMakeSpan;
 use tower_http::{cors::CorsLayer, services::ServeDir, trace::TraceLayer};
 use tracing::Span;
@@ -95,17 +95,7 @@ pub fn build_router(ctx: AppState) -> Router {
 
     // Configure CORS to allow React frontend access
     let cors = CorsLayer::new()
-        .allow_origin([
-            "http://localhost:3001"
-                .parse::<axum::http::HeaderValue>()
-                .unwrap(),
-            "http://localhost:3002"
-                .parse::<axum::http::HeaderValue>()
-                .unwrap(),
-            "https://psteniusubi.github.io"
-                .parse::<axum::http::HeaderValue>()
-                .unwrap(),
-        ])
+        .allow_origin(Any)
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
@@ -137,19 +127,6 @@ pub fn build_router(ctx: AppState) -> Router {
             post(xrpc_clients_update_handler),
         )
         .nest_service("/static", ServeDir::new(&ctx.config.http_static_path))
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(
-                    DefaultMakeSpan::new()
-                        .level(tracing::Level::INFO)
-                        .include_headers(true),
-                )
-                .on_failure(
-                    |err: ServerErrorsFailureClass, _latency: Duration, _span: &Span| {
-                        tracing::error!(error = ?err, "Unhandled error: {err}");
-                    },
-                ),
-        )
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(ctx)

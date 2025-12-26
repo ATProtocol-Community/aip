@@ -18,6 +18,56 @@ use crate::oauth::{
 };
 use crate::{errors::OAuthError, oauth::TokenResponse};
 
+/// Generate an ID token for OpenID Connect responses
+async fn generate_id_token(
+    state: &AppState,
+    token_response: &TokenResponse,
+    request: &TokenRequest,
+    now: chrono::DateTime<Utc>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    // Retrieve the access token from storage
+    let access_token = state
+        .oauth_storage
+        .get_token(token_response.access_token.as_ref())
+        .await
+        .map_err(|e| format!("Failed to retrieve access token: {}", e))?
+        .ok_or("Access token not found in storage")?;
+
+    // Build OpenID claims
+    let claims = OpenIDClaims::new_id_token(
+        state.config.external_base.clone(),
+        access_token.client_id.clone(),
+        now,
+    )
+    .with_did(access_token.user_id.clone())
+    .with_c_hash(request.code.as_deref())
+    .with_at_hash(&access_token.token)
+    .with_nonce(access_token.nonce);
+
+    // Serialize claims
+    let vague_claims = serde_json::to_value(claims)
+        .map_err(|e| format!("Failed to serialize claims: {}", e))?;
+    let real_claims: atproto_oauth::jwt::Claims = serde_json::from_value(vague_claims)
+        .map_err(|e| format!("Failed to deserialize claims: {}", e))?;
+
+    // Get signing key
+    let private_signing_key_data = state
+        .atproto_oauth_signing_keys
+        .first()
+        .ok_or("No ATProtocol OAuth signing keys configured")?;
+
+    // Create JWT header and mint token
+    let header: Header = private_signing_key_data
+        .clone()
+        .try_into()
+        .map_err(|e| format!("Failed to create JWT header: {:?}", e))?;
+
+    let id_token = mint(private_signing_key_data, &header, &real_claims)
+        .map_err(|e| format!("Failed to mint ID token: {:?}", e))?;
+
+    Ok(id_token)
+}
+
 /// Handle ATProtocol-backed OAuth token requests
 /// POST /oauth/token - Exchanges authorization code for JWT with ATProtocol identity
 #[axum::debug_handler]
@@ -56,6 +106,12 @@ pub async fn handle_oauth_token(
         .await
     {
         Ok(mut value) => {
+            tracing::debug!(
+                access_token = %value.access_token,
+                token_type = ?value.token_type,
+                scope = ?value.scope,
+                "Token exchange successful"
+            );
             // For device code grants, link the access token to an existing ATProtocol session
             if matches!(
                 request.grant_type,
@@ -117,37 +173,33 @@ pub async fn handle_oauth_token(
             }
 
             if value.scope.clone().is_some_and(|v| v.contains("openid")) {
-                let access_token = state
-                    .oauth_storage
-                    .get_token(value.access_token.as_ref())
-                    .await
-                    .unwrap();
-                let access_token: crate::oauth::AccessToken = access_token.unwrap();
-
-                let claims = OpenIDClaims::new_id_token(
-                    state.config.external_base.clone(),
-                    access_token.client_id.clone(),
-                    now,
-                )
-                .with_did(access_token.user_id.clone())
-                .with_c_hash(request.code.as_deref())
-                .with_at_hash(&access_token.token)
-                .with_nonce(access_token.nonce);
-
-                let vague_claims = serde_json::to_value(claims).unwrap();
-                let real_claims: atproto_oauth::jwt::Claims =
-                    serde_json::from_value(vague_claims).unwrap();
-
-                let private_signing_key_data = state.atproto_oauth_signing_keys.first().unwrap();
-                let header: Header = private_signing_key_data.clone().try_into().unwrap();
-                let id_token = mint(private_signing_key_data, &header, &real_claims).unwrap();
-
-                value = value.with_id_token(id_token);
+                // Generate ID token for OpenID Connect
+                match generate_id_token(&state, &value, &request, now).await {
+                    Ok(id_token) => {
+                        value = value.with_id_token(id_token);
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            access_token = %value.access_token,
+                            "Failed to generate ID token, returning response without it"
+                        );
+                        // Continue without ID token rather than failing the entire request
+                    }
+                }
             }
 
             Ok(Json(value))
         }
         Err(e) => {
+            tracing::error!(
+                error = %e,
+                error_debug = ?e,
+                grant_type = ?request.grant_type,
+                client_id = ?request.client_id,
+                "Token exchange failed"
+            );
+
             let (status, error_code) = match e {
                 OAuthError::InvalidClient(_) => (StatusCode::UNAUTHORIZED, "invalid_client"),
                 OAuthError::InvalidGrant(_) => (StatusCode::BAD_REQUEST, "invalid_grant"),

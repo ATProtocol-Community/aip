@@ -187,6 +187,8 @@ impl AuthorizationServer {
         headers: &HeaderMap,
         client_auth: Option<ClientAuthentication>,
     ) -> Result<TokenResponse, OAuthError> {
+        tracing::debug!("Processing authorization code grant");
+
         let code = request
             .code
             .as_ref()
@@ -197,13 +199,21 @@ impl AuthorizationServer {
             .as_ref()
             .ok_or_else(|| OAuthError::InvalidRequest("Missing redirect URI".to_string()))?;
 
+        tracing::debug!(code_prefix = %&code[..std::cmp::min(8, code.len())], "Looking up authorization code");
+
         // Get authorization code without consuming (for validation)
         let auth_code: AuthorizationCode = self
             .storage
             .get_code(code)
             .await
-            .map_err(|e| OAuthError::ServerError(e.to_string()))?
-            .ok_or_else(|| OAuthError::InvalidGrant("Invalid authorization code".to_string()))?;
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to get authorization code from storage");
+                OAuthError::ServerError(e.to_string())
+            })?
+            .ok_or_else(|| {
+                tracing::warn!(code_prefix = %&code[..std::cmp::min(8, code.len())], "Authorization code not found");
+                OAuthError::InvalidGrant("Invalid authorization code".to_string())
+            })?;
 
         // Verify redirect URI matches
         if auth_code.redirect_uri != *redirect_uri {
@@ -298,16 +308,29 @@ impl AuthorizationServer {
             expires_at: Some(now + client.refresh_token_expiration),
         };
 
+        tracing::debug!(
+            client_id = %access_token_record.client_id,
+            user_id = ?access_token_record.user_id,
+            "Exchanging authorization code for tokens"
+        );
+
         // Atomically exchange code for tokens
         self.storage
             .exchange_code_for_tokens(code, &access_token_record, Some(&refresh_token_record))
             .await
             .map_err(|e| {
+                tracing::error!(error = ?e, "Failed to exchange code for tokens");
                 OAuthError::ServerError(format!("Failed to exchange code for tokens: {:?}", e))
             })?
             .ok_or_else(|| {
+                tracing::warn!("Authorization code was already used or expired during exchange");
                 OAuthError::InvalidGrant("Authorization code already used or expired".to_string())
             })?;
+
+        tracing::debug!(
+            access_token_prefix = %&access_token[..std::cmp::min(8, access_token.len())],
+            "Token exchange completed successfully"
+        );
 
         Ok(TokenResponse::new(
             access_token,
