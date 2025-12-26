@@ -121,6 +121,29 @@ impl AuthorizationCodeStore for MemoryOAuthStorage {
         Ok(())
     }
 
+    async fn get_code(&self, code: &str) -> Result<Option<AuthorizationCode>> {
+        let codes = self
+            .auth_codes
+            .lock()
+            .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
+
+        if let Some(auth_code) = codes.get(code).cloned() {
+            // Check if code is expired
+            if auth_code.expires_at < Utc::now() {
+                return Ok(None);
+            }
+
+            // Check if code is already used
+            if auth_code.used {
+                return Ok(None);
+            }
+
+            Ok(Some(auth_code))
+        } else {
+            Ok(None)
+        }
+    }
+
     async fn consume_code(&self, code: &str) -> Result<Option<AuthorizationCode>> {
         let mut codes = self
             .auth_codes
@@ -258,6 +281,25 @@ impl RefreshTokenStore for MemoryOAuthStorage {
             .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
         tokens.insert(token.token.clone(), token.clone());
         Ok(())
+    }
+
+    async fn get_refresh_token(&self, token: &str) -> Result<Option<RefreshToken>> {
+        let tokens = self
+            .refresh_tokens
+            .lock()
+            .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
+
+        if let Some(refresh_token) = tokens.get(token) {
+            // Check if token is expired (if it has an expiry)
+            if let Some(expires_at) = refresh_token.expires_at
+                && expires_at < Utc::now()
+            {
+                return Ok(None);
+            }
+            Ok(Some(refresh_token.clone()))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn consume_refresh_token(&self, token: &str) -> Result<Option<RefreshToken>> {
@@ -836,6 +878,123 @@ impl AppPasswordSessionStore for MemoryOAuthStorage {
 }
 
 impl OAuthStorage for MemoryOAuthStorage {}
+
+#[async_trait]
+impl TransactionalStorage for MemoryOAuthStorage {
+    async fn upsert_app_password_with_session(
+        &self,
+        app_password: &AppPassword,
+        session: &AppPasswordSession,
+    ) -> Result<()> {
+        // Hold both locks simultaneously to ensure atomicity
+        let mut passwords = self.app_passwords.write().await;
+        let mut sessions = self.app_password_sessions.write().await;
+
+        let key = Self::app_password_key(&app_password.client_id, &app_password.did);
+
+        // Step 1: Delete existing sessions (if any)
+        sessions.remove(&key);
+
+        // Step 2: Store the app password (creates or updates)
+        passwords.insert(key.clone(), app_password.clone());
+
+        // Step 3: Store the new session
+        sessions.insert(key, session.clone());
+
+        Ok(())
+    }
+
+    async fn exchange_code_for_tokens(
+        &self,
+        code: &str,
+        access_token: &AccessToken,
+        refresh_token: Option<&RefreshToken>,
+    ) -> Result<Option<AuthorizationCode>> {
+        // Hold all necessary locks simultaneously
+        let mut codes = self
+            .auth_codes
+            .lock()
+            .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
+        let mut access_tokens = self
+            .access_tokens
+            .lock()
+            .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
+        let mut refresh_tokens = self
+            .refresh_tokens
+            .lock()
+            .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
+
+        // Step 1: Consume the authorization code
+        let auth_code = if let Some(mut auth_code) = codes.get(code).cloned() {
+            // Check if code is expired
+            if auth_code.expires_at < Utc::now() {
+                codes.remove(code);
+                return Ok(None);
+            }
+
+            // Check if code is already used
+            if auth_code.used {
+                codes.remove(code);
+                return Ok(None);
+            }
+
+            // Mark as used
+            auth_code.used = true;
+            codes.insert(code.to_string(), auth_code.clone());
+            auth_code
+        } else {
+            return Ok(None);
+        };
+
+        // Step 2: Store the access token
+        access_tokens.insert(access_token.token.clone(), access_token.clone());
+
+        // Step 3: Store the refresh token (if provided)
+        if let Some(rt) = refresh_token {
+            refresh_tokens.insert(rt.token.clone(), rt.clone());
+        }
+
+        Ok(Some(auth_code))
+    }
+
+    async fn refresh_tokens(
+        &self,
+        old_refresh_token: &str,
+        new_access_token: &AccessToken,
+        new_refresh_token: &RefreshToken,
+    ) -> Result<Option<RefreshToken>> {
+        // Hold all necessary locks simultaneously
+        let mut access_tokens = self
+            .access_tokens
+            .lock()
+            .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
+        let mut refresh_tokens = self
+            .refresh_tokens
+            .lock()
+            .map_err(|e| StorageError::SerializationFailed(e.to_string()))?;
+
+        // Step 1: Consume the old refresh token
+        let consumed_token = if let Some(token) = refresh_tokens.remove(old_refresh_token) {
+            // Check if token is expired (if it has an expiry)
+            if let Some(expires_at) = token.expires_at {
+                if expires_at < Utc::now() {
+                    return Ok(None);
+                }
+            }
+            token
+        } else {
+            return Ok(None);
+        };
+
+        // Step 2: Store the new access token
+        access_tokens.insert(new_access_token.token.clone(), new_access_token.clone());
+
+        // Step 3: Store the new refresh token
+        refresh_tokens.insert(new_refresh_token.token.clone(), new_refresh_token.clone());
+
+        Ok(Some(consumed_token))
+    }
+}
 
 #[cfg(test)]
 mod tests {

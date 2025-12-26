@@ -109,6 +109,29 @@ impl AuthorizationCodeStore for SqliteAuthorizationCodeStore {
         Ok(())
     }
 
+    async fn get_code(&self, code_value: &str) -> Result<Option<AuthorizationCode>> {
+        let row = sqlx::query("SELECT * FROM authorization_codes WHERE code = ? AND used = 0")
+            .bind(code_value)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+
+        match row {
+            Some(row) => {
+                let authorization_code = Self::row_to_authorization_code(&row)?;
+
+                // Check if the code has expired
+                let now = Utc::now();
+                if authorization_code.expires_at <= now {
+                    return Ok(None);
+                }
+
+                Ok(Some(authorization_code))
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn consume_code(&self, code_value: &str) -> Result<Option<AuthorizationCode>> {
         // Start a transaction to ensure atomicity
         let mut tx = self

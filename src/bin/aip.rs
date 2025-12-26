@@ -37,7 +37,7 @@ use tracing_subscriber::prelude::*;
 
 // Type alias to simplify the complex storage tuple type
 type StorageTuple = (
-    Arc<dyn aip::storage::traits::OAuthStorage>,
+    Arc<dyn aip::storage::traits::TransactionalStorage + Send + Sync>,
     Arc<dyn OAuthRequestStorage>,
     Arc<dyn DidDocumentStorage>,
     Arc<dyn AtpOAuthSessionStorage>,
@@ -347,7 +347,7 @@ async fn main() -> Result<()> {
 
 /// Ensure the internal device authorization client exists
 async fn ensure_internal_device_auth_client(
-    oauth_storage: &Arc<dyn aip::storage::traits::OAuthStorage>,
+    oauth_storage: &Arc<dyn aip::storage::traits::TransactionalStorage + Send + Sync>,
     config: &Config,
 ) -> Result<()> {
     use aip::oauth::types::{

@@ -128,6 +128,13 @@ impl AuthorizationCodeStore for SqliteOAuthStorage {
         self.authorization_code_store.store_code(code).await
     }
 
+    async fn get_code(
+        &self,
+        code: &str,
+    ) -> Result<Option<crate::oauth::types::AuthorizationCode>> {
+        self.authorization_code_store.get_code(code).await
+    }
+
     async fn consume_code(
         &self,
         code: &str,
@@ -177,6 +184,13 @@ impl AccessTokenStore for SqliteOAuthStorage {
 impl RefreshTokenStore for SqliteOAuthStorage {
     async fn store_refresh_token(&self, token: &crate::oauth::types::RefreshToken) -> Result<()> {
         self.refresh_token_store.store_refresh_token(token).await
+    }
+
+    async fn get_refresh_token(
+        &self,
+        token: &str,
+    ) -> Result<Option<crate::oauth::types::RefreshToken>> {
+        self.refresh_token_store.get_refresh_token(token).await
     }
 
     async fn consume_refresh_token(
@@ -480,3 +494,419 @@ impl AppPasswordSessionStore for SqliteOAuthStorage {
 
 // Implement the combined OAuthStorage trait
 impl OAuthStorage for SqliteOAuthStorage {}
+
+#[async_trait]
+impl TransactionalStorage for SqliteOAuthStorage {
+    async fn upsert_app_password_with_session(
+        &self,
+        app_password: &AppPassword,
+        session: &AppPasswordSession,
+    ) -> Result<()> {
+        // Start a transaction to ensure atomicity
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::TransactionFailed(format!("Failed to begin: {}", e)))?;
+
+        // Step 1: Delete existing sessions
+        sqlx::query("DELETE FROM app_password_sessions WHERE client_id = ?1 AND did = ?2")
+            .bind(&app_password.client_id)
+            .bind(&app_password.did)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                StorageError::TransactionFailed(format!("Failed to delete sessions: {}", e))
+            })?;
+
+        // Step 2: Store the app password (upsert)
+        let created_at = app_password.created_at.to_rfc3339();
+        let updated_at = app_password.updated_at.to_rfc3339();
+
+        sqlx::query(
+            r#"
+            INSERT INTO app_passwords (client_id, did, app_password, created_at, updated_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            ON CONFLICT(client_id, did) DO UPDATE SET
+                app_password = excluded.app_password,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(&app_password.client_id)
+        .bind(&app_password.did)
+        .bind(&app_password.app_password)
+        .bind(&created_at)
+        .bind(&updated_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            StorageError::TransactionFailed(format!("Failed to store app password: {}", e))
+        })?;
+
+        // Step 3: Store the new session
+        let access_token_created_at = session.access_token_created_at.to_rfc3339();
+        let access_token_expires_at = session.access_token_expires_at.to_rfc3339();
+        let session_exchanged_at = session.session_exchanged_at.map(|dt| dt.to_rfc3339());
+
+        sqlx::query(
+            r#"
+            INSERT INTO app_password_sessions (
+                client_id, did, access_token, refresh_token,
+                access_token_created_at, access_token_expires_at,
+                iteration, session_exchanged_at, exchange_error
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            ON CONFLICT(client_id, did) DO UPDATE SET
+                access_token = excluded.access_token,
+                refresh_token = excluded.refresh_token,
+                access_token_created_at = excluded.access_token_created_at,
+                access_token_expires_at = excluded.access_token_expires_at,
+                iteration = excluded.iteration,
+                session_exchanged_at = excluded.session_exchanged_at,
+                exchange_error = excluded.exchange_error
+            "#,
+        )
+        .bind(&session.client_id)
+        .bind(&session.did)
+        .bind(&session.access_token)
+        .bind(&session.refresh_token)
+        .bind(&access_token_created_at)
+        .bind(&access_token_expires_at)
+        .bind(session.iteration as i32)
+        .bind(&session_exchanged_at)
+        .bind(&session.exchange_error)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            StorageError::TransactionFailed(format!("Failed to store session: {}", e))
+        })?;
+
+        // Commit the transaction
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::TransactionFailed(format!("Failed to commit: {}", e)))?;
+
+        Ok(())
+    }
+
+    async fn exchange_code_for_tokens(
+        &self,
+        code: &str,
+        access_token: &crate::oauth::types::AccessToken,
+        refresh_token: Option<&crate::oauth::types::RefreshToken>,
+    ) -> Result<Option<crate::oauth::types::AuthorizationCode>> {
+        use chrono::Utc;
+        use sqlx::Row;
+
+        // Start a transaction to ensure atomicity
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::TransactionFailed(format!("Failed to begin: {}", e)))?;
+
+        // Step 1: Get and consume the authorization code
+        let row = sqlx::query("SELECT * FROM authorization_codes WHERE code = ? AND used = 0")
+            .bind(code)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                StorageError::TransactionFailed(format!("Failed to get code: {}", e))
+            })?;
+
+        let auth_code = match row {
+            Some(row) => {
+                // Parse the authorization code
+                let created_at_str: String = row
+                    .try_get("created_at")
+                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get created_at: {}", e)))?;
+                let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                    .map_err(|e| StorageError::InvalidData(format!("Invalid created_at: {}", e)))?
+                    .with_timezone(&Utc);
+
+                let expires_at_str: String = row
+                    .try_get("expires_at")
+                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get expires_at: {}", e)))?;
+                let expires_at = chrono::DateTime::parse_from_rfc3339(&expires_at_str)
+                    .map_err(|e| StorageError::InvalidData(format!("Invalid expires_at: {}", e)))?
+                    .with_timezone(&Utc);
+
+                let used_int: i64 = row
+                    .try_get("used")
+                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get used: {}", e)))?;
+                let used = used_int != 0;
+
+                let auth_code = crate::oauth::types::AuthorizationCode {
+                    code: row.try_get("code").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    client_id: row.try_get("client_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    user_id: row.try_get("user_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    session_id: row.try_get("session_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    redirect_uri: row.try_get("redirect_uri").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    scope: row.try_get("scope").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    code_challenge: row.try_get("code_challenge").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    code_challenge_method: row.try_get("code_challenge_method").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    nonce: row.try_get("nonce").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    created_at,
+                    expires_at,
+                    used,
+                };
+
+                // Check if expired
+                if auth_code.expires_at <= Utc::now() {
+                    sqlx::query("DELETE FROM authorization_codes WHERE code = ?")
+                        .bind(code)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+                    tx.commit().await.map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+                    return Ok(None);
+                }
+
+                auth_code
+            }
+            None => {
+                tx.rollback().await.ok();
+                return Ok(None);
+            }
+        };
+
+        // Mark code as used
+        sqlx::query("UPDATE authorization_codes SET used = 1 WHERE code = ?")
+            .bind(code)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                StorageError::TransactionFailed(format!("Failed to mark code used: {}", e))
+            })?;
+
+        // Step 2: Store the access token
+        let created_at_str = access_token.created_at.to_rfc3339();
+        let expires_at_str = access_token.expires_at.to_rfc3339();
+        let token_type_str = match access_token.token_type {
+            crate::oauth::types::TokenType::Bearer => "bearer",
+            crate::oauth::types::TokenType::DPoP => "dpop",
+        };
+        let session_iteration = access_token.session_iteration.map(|i| i as i64);
+
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO access_tokens (
+                token, token_type, client_id, user_id, session_id, session_iteration,
+                scope, nonce, created_at, expires_at, dpop_jkt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&access_token.token)
+        .bind(token_type_str)
+        .bind(&access_token.client_id)
+        .bind(&access_token.user_id)
+        .bind(&access_token.session_id)
+        .bind(session_iteration)
+        .bind(&access_token.scope)
+        .bind(&access_token.nonce)
+        .bind(&created_at_str)
+        .bind(&expires_at_str)
+        .bind(&access_token.dpop_jkt)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            StorageError::TransactionFailed(format!("Failed to store access token: {}", e))
+        })?;
+
+        // Step 3: Store the refresh token if provided
+        if let Some(rt) = refresh_token {
+            let rt_created_at_str = rt.created_at.to_rfc3339();
+            let rt_expires_at_str = rt.expires_at.as_ref().map(|dt| dt.to_rfc3339());
+
+            sqlx::query(
+                r#"
+                INSERT INTO refresh_tokens (
+                    token, access_token, client_id, user_id, session_id,
+                    scope, nonce, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&rt.token)
+            .bind(&rt.access_token)
+            .bind(&rt.client_id)
+            .bind(&rt.user_id)
+            .bind(&rt.session_id)
+            .bind(&rt.scope)
+            .bind(&rt.nonce)
+            .bind(&rt_created_at_str)
+            .bind(&rt_expires_at_str)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                StorageError::TransactionFailed(format!("Failed to store refresh token: {}", e))
+            })?;
+        }
+
+        // Commit the transaction
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::TransactionFailed(format!("Failed to commit: {}", e)))?;
+
+        Ok(Some(auth_code))
+    }
+
+    async fn refresh_tokens(
+        &self,
+        old_refresh_token: &str,
+        new_access_token: &crate::oauth::types::AccessToken,
+        new_refresh_token: &crate::oauth::types::RefreshToken,
+    ) -> Result<Option<crate::oauth::types::RefreshToken>> {
+        use chrono::Utc;
+        use sqlx::Row;
+
+        // Start a transaction to ensure atomicity
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| StorageError::TransactionFailed(format!("Failed to begin: {}", e)))?;
+
+        // Step 1: Get and consume the old refresh token
+        let row = sqlx::query("SELECT * FROM refresh_tokens WHERE token = ?")
+            .bind(old_refresh_token)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|e| {
+                StorageError::TransactionFailed(format!("Failed to get refresh token: {}", e))
+            })?;
+
+        let consumed_token = match row {
+            Some(row) => {
+                // Parse the refresh token
+                let created_at_str: String = row
+                    .try_get("created_at")
+                    .map_err(|e| StorageError::DatabaseError(format!("Failed to get created_at: {}", e)))?;
+                let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_str)
+                    .map_err(|e| StorageError::InvalidData(format!("Invalid created_at: {}", e)))?
+                    .with_timezone(&Utc);
+
+                let expires_at = if let Ok(expires_at_str) = row.try_get::<Option<String>, _>("expires_at") {
+                    if let Some(expires_at_str) = expires_at_str {
+                        Some(
+                            chrono::DateTime::parse_from_rfc3339(&expires_at_str)
+                                .map_err(|e| StorageError::InvalidData(format!("Invalid expires_at: {}", e)))?
+                                .with_timezone(&Utc),
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+
+                let refresh_token = crate::oauth::types::RefreshToken {
+                    token: row.try_get("token").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    access_token: row.try_get("access_token").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    client_id: row.try_get("client_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    user_id: row.try_get("user_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    session_id: row.try_get("session_id").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    scope: row.try_get("scope").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    nonce: row.try_get("nonce").map_err(|e| StorageError::DatabaseError(e.to_string()))?,
+                    created_at,
+                    expires_at,
+                };
+
+                // Check if expired
+                if let Some(exp) = refresh_token.expires_at {
+                    if exp <= Utc::now() {
+                        sqlx::query("DELETE FROM refresh_tokens WHERE token = ?")
+                            .bind(old_refresh_token)
+                            .execute(&mut *tx)
+                            .await
+                            .map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+                        tx.commit().await.map_err(|e| StorageError::TransactionFailed(e.to_string()))?;
+                        return Ok(None);
+                    }
+                }
+
+                refresh_token
+            }
+            None => {
+                tx.rollback().await.ok();
+                return Ok(None);
+            }
+        };
+
+        // Delete the old refresh token (one-time use)
+        sqlx::query("DELETE FROM refresh_tokens WHERE token = ?")
+            .bind(old_refresh_token)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                StorageError::TransactionFailed(format!("Failed to delete old token: {}", e))
+            })?;
+
+        // Step 2: Store the new access token
+        let created_at_str = new_access_token.created_at.to_rfc3339();
+        let expires_at_str = new_access_token.expires_at.to_rfc3339();
+        let token_type_str = match new_access_token.token_type {
+            crate::oauth::types::TokenType::Bearer => "bearer",
+            crate::oauth::types::TokenType::DPoP => "dpop",
+        };
+        let session_iteration = new_access_token.session_iteration.map(|i| i as i64);
+
+        sqlx::query(
+            r#"
+            INSERT OR REPLACE INTO access_tokens (
+                token, token_type, client_id, user_id, session_id, session_iteration,
+                scope, nonce, created_at, expires_at, dpop_jkt
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&new_access_token.token)
+        .bind(token_type_str)
+        .bind(&new_access_token.client_id)
+        .bind(&new_access_token.user_id)
+        .bind(&new_access_token.session_id)
+        .bind(session_iteration)
+        .bind(&new_access_token.scope)
+        .bind(&new_access_token.nonce)
+        .bind(&created_at_str)
+        .bind(&expires_at_str)
+        .bind(&new_access_token.dpop_jkt)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            StorageError::TransactionFailed(format!("Failed to store access token: {}", e))
+        })?;
+
+        // Step 3: Store the new refresh token
+        let rt_created_at_str = new_refresh_token.created_at.to_rfc3339();
+        let rt_expires_at_str = new_refresh_token.expires_at.as_ref().map(|dt| dt.to_rfc3339());
+
+        sqlx::query(
+            r#"
+            INSERT INTO refresh_tokens (
+                token, access_token, client_id, user_id, session_id,
+                scope, nonce, created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(&new_refresh_token.token)
+        .bind(&new_refresh_token.access_token)
+        .bind(&new_refresh_token.client_id)
+        .bind(&new_refresh_token.user_id)
+        .bind(&new_refresh_token.session_id)
+        .bind(&new_refresh_token.scope)
+        .bind(&new_refresh_token.nonce)
+        .bind(&rt_created_at_str)
+        .bind(&rt_expires_at_str)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| {
+            StorageError::TransactionFailed(format!("Failed to store refresh token: {}", e))
+        })?;
+
+        // Commit the transaction
+        tx.commit()
+            .await
+            .map_err(|e| StorageError::TransactionFailed(format!("Failed to commit: {}", e)))?;
+
+        Ok(Some(consumed_token))
+    }
+}

@@ -2,7 +2,7 @@
 
 use crate::errors::OAuthError;
 use crate::oauth::{dpop::*, types::*};
-use crate::storage::traits::OAuthStorage;
+use crate::storage::traits::TransactionalStorage;
 use atproto_identity::key::KeyType;
 use atproto_oauth::jwk::{WrappedJsonWebKey, to_key_data};
 use axum::{
@@ -21,7 +21,7 @@ use url::Url;
 
 /// OAuth 2.1 Authorization Server
 pub struct AuthorizationServer {
-    pub storage: Arc<dyn OAuthStorage>,
+    pub storage: Arc<dyn TransactionalStorage>,
     dpop_validator: DPoPValidator,
     /// Authorization code lifetime
     auth_code_lifetime: Duration,
@@ -33,7 +33,7 @@ pub struct AuthorizationServer {
 
 impl AuthorizationServer {
     /// Create a new authorization server
-    pub fn new(storage: Arc<dyn OAuthStorage>, issuer: String) -> Self {
+    pub fn new(storage: Arc<dyn TransactionalStorage>, issuer: String) -> Self {
         let nonce_store = Box::new(crate::storage::MemoryNonceStorage::new());
         let dpop_validator = DPoPValidator::new(nonce_store);
 
@@ -197,10 +197,10 @@ impl AuthorizationServer {
             .as_ref()
             .ok_or_else(|| OAuthError::InvalidRequest("Missing redirect URI".to_string()))?;
 
-        // Consume authorization code
+        // Get authorization code without consuming (for validation)
         let auth_code: AuthorizationCode = self
             .storage
-            .consume_code(code)
+            .get_code(code)
             .await
             .map_err(|e| OAuthError::ServerError(e.to_string()))?
             .ok_or_else(|| OAuthError::InvalidGrant("Invalid authorization code".to_string()))?;
@@ -270,7 +270,7 @@ impl AuthorizationServer {
         let refresh_token = generate_token();
         let now = Utc::now();
 
-        // Store access token
+        // Build access token record
         let access_token_record = AccessToken {
             token: access_token.clone(),
             token_type: token_type.clone(),
@@ -285,19 +285,12 @@ impl AuthorizationServer {
             dpop_jkt,
         };
 
-        self.storage
-            .store_token(&access_token_record)
-            .await
-            .map_err(|e| {
-                OAuthError::ServerError(format!("Failed to store access token: {:?}", e))
-            })?;
-
-        // Store refresh token
+        // Build refresh token record
         let refresh_token_record = RefreshToken {
             token: refresh_token.clone(),
             access_token: access_token.clone(),
             client_id: client.client_id,
-            user_id: auth_code.user_id,
+            user_id: auth_code.user_id.clone(),
             session_id: auth_code.session_id.clone(),
             scope: auth_code.scope.clone(),
             nonce: auth_code.nonce.clone(),
@@ -305,11 +298,15 @@ impl AuthorizationServer {
             expires_at: Some(now + client.refresh_token_expiration),
         };
 
+        // Atomically exchange code for tokens
         self.storage
-            .store_refresh_token(&refresh_token_record)
+            .exchange_code_for_tokens(code, &access_token_record, Some(&refresh_token_record))
             .await
             .map_err(|e| {
-                OAuthError::ServerError(format!("Failed to store refresh token: {:?}", e))
+                OAuthError::ServerError(format!("Failed to exchange code for tokens: {:?}", e))
+            })?
+            .ok_or_else(|| {
+                OAuthError::InvalidGrant("Authorization code already used or expired".to_string())
             })?;
 
         Ok(TokenResponse::new(
@@ -419,10 +416,10 @@ impl AuthorizationServer {
             .as_ref()
             .ok_or_else(|| OAuthError::InvalidRequest("Missing refresh token".to_string()))?;
 
-        // Consume refresh token
+        // Get refresh token without consuming (for validation)
         let refresh_token_record: RefreshToken = self
             .storage
-            .consume_refresh_token(refresh_token)
+            .get_refresh_token(refresh_token)
             .await
             .map_err(|e| OAuthError::ServerError(e.to_string()))?
             .ok_or_else(|| OAuthError::InvalidGrant("Invalid refresh token".to_string()))?;
@@ -438,6 +435,7 @@ impl AuthorizationServer {
         // Authenticate client
         self.authenticate_client(&client, client_auth, &request)?;
 
+        // Get the old access token for session_iteration and token_type
         let old_access_token = self
             .storage
             .get_token(&refresh_token_record.access_token)
@@ -454,7 +452,7 @@ impl AuthorizationServer {
         let new_refresh_token = generate_token();
         let now = Utc::now();
 
-        // Store new access token
+        // Build new access token record
         let access_token_record = AccessToken {
             token: new_access_token.clone(),
             token_type: old_access_token.token_type,
@@ -469,31 +467,28 @@ impl AuthorizationServer {
             dpop_jkt: old_access_token.dpop_jkt,
         };
 
-        self.storage
-            .store_token(&access_token_record)
-            .await
-            .map_err(|e| {
-                OAuthError::ServerError(format!("Failed to store access token: {:?}", e))
-            })?;
-
-        // Store new refresh token
+        // Build new refresh token record
         let new_refresh_token_record = RefreshToken {
             token: new_refresh_token.clone(),
             access_token: new_access_token.clone(),
             client_id: client.client_id,
-            user_id: refresh_token_record.user_id,
-            session_id: refresh_token_record.session_id,
+            user_id: refresh_token_record.user_id.clone(),
+            session_id: refresh_token_record.session_id.clone(),
             scope: refresh_token_record.scope.clone(),
             nonce: refresh_token_record.nonce.clone(),
             created_at: now,
             expires_at: Some(now + client.refresh_token_expiration),
         };
 
+        // Atomically refresh tokens
         self.storage
-            .store_refresh_token(&new_refresh_token_record)
+            .refresh_tokens(refresh_token, &access_token_record, &new_refresh_token_record)
             .await
             .map_err(|e| {
-                OAuthError::ServerError(format!("Failed to store refresh token: {:?}", e))
+                OAuthError::ServerError(format!("Failed to refresh tokens: {:?}", e))
+            })?
+            .ok_or_else(|| {
+                OAuthError::InvalidGrant("Refresh token already used or expired".to_string())
             })?;
 
         Ok(TokenResponse::new(

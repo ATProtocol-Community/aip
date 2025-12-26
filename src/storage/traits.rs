@@ -40,6 +40,12 @@ pub trait AuthorizationCodeStore {
     /// Store a new authorization code
     async fn store_code(&self, code: &AuthorizationCode) -> Result<()>;
 
+    /// Retrieve an authorization code without consuming it
+    ///
+    /// Use this for validation before calling atomic exchange operations.
+    /// Returns None if the code doesn't exist or is already used.
+    async fn get_code(&self, code: &str) -> Result<Option<AuthorizationCode>>;
+
     /// Retrieve and consume an authorization code
     async fn consume_code(&self, code: &str) -> Result<Option<AuthorizationCode>>;
 
@@ -74,6 +80,12 @@ pub trait AccessTokenStore {
 pub trait RefreshTokenStore {
     /// Store a new refresh token
     async fn store_refresh_token(&self, token: &RefreshToken) -> Result<()>;
+
+    /// Retrieve a refresh token without consuming it
+    ///
+    /// Use this for validation before calling atomic refresh operations.
+    /// Returns None if the token doesn't exist or is expired.
+    async fn get_refresh_token(&self, token: &str) -> Result<Option<RefreshToken>>;
 
     /// Retrieve and consume a refresh token
     async fn consume_refresh_token(&self, token: &str) -> Result<Option<RefreshToken>>;
@@ -403,4 +415,63 @@ pub trait OAuthStorage:
     + Send
     + Sync
 {
+}
+
+// ===== Transactional Storage Trait =====
+
+/// Trait for storage implementations that support atomic multi-step operations
+///
+/// This extends `OAuthStorage` with methods that perform multiple operations
+/// atomically. For database backends, these use SQL transactions. For in-memory
+/// backends, these use a single lock held for the duration.
+///
+/// All operations in this trait guarantee that either all changes are committed
+/// or none are (rollback on failure).
+#[async_trait]
+pub trait TransactionalStorage: OAuthStorage {
+    /// Atomically create or update an app password with its session
+    ///
+    /// This operation:
+    /// 1. Deletes any existing sessions for the client/DID pair
+    /// 2. Stores the new app password (creates or updates)
+    /// 3. Creates a new session
+    ///
+    /// If any step fails, all changes are rolled back.
+    async fn upsert_app_password_with_session(
+        &self,
+        app_password: &AppPassword,
+        session: &AppPasswordSession,
+    ) -> Result<()>;
+
+    /// Atomically exchange an authorization code for tokens
+    ///
+    /// This operation:
+    /// 1. Consumes the authorization code (marks as used)
+    /// 2. Stores the access token
+    /// 3. Stores the refresh token (if provided)
+    ///
+    /// Returns the consumed authorization code if successful.
+    /// If any step fails, all changes are rolled back.
+    async fn exchange_code_for_tokens(
+        &self,
+        code: &str,
+        access_token: &AccessToken,
+        refresh_token: Option<&RefreshToken>,
+    ) -> Result<Option<AuthorizationCode>>;
+
+    /// Atomically refresh tokens
+    ///
+    /// This operation:
+    /// 1. Consumes the old refresh token
+    /// 2. Stores the new access token
+    /// 3. Stores the new refresh token
+    ///
+    /// Returns the consumed refresh token if successful.
+    /// If any step fails, all changes are rolled back.
+    async fn refresh_tokens(
+        &self,
+        old_refresh_token: &str,
+        new_access_token: &AccessToken,
+        new_refresh_token: &RefreshToken,
+    ) -> Result<Option<RefreshToken>>;
 }

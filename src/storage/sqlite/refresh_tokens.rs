@@ -106,6 +106,31 @@ impl RefreshTokenStore for SqliteRefreshTokenStore {
         Ok(())
     }
 
+    async fn get_refresh_token(&self, token_value: &str) -> Result<Option<RefreshToken>> {
+        let row = sqlx::query("SELECT * FROM refresh_tokens WHERE token = ?")
+            .bind(token_value)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+
+        match row {
+            Some(row) => {
+                let refresh_token = Self::row_to_refresh_token(&row)?;
+
+                // Check if the token has expired (if it has an expiration date)
+                if let Some(expires_at) = refresh_token.expires_at {
+                    let now = Utc::now();
+                    if expires_at <= now {
+                        return Ok(None);
+                    }
+                }
+
+                Ok(Some(refresh_token))
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn consume_refresh_token(&self, token_value: &str) -> Result<Option<RefreshToken>> {
         // Start a transaction to ensure atomicity
         let mut tx = self

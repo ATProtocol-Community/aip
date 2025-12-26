@@ -98,6 +98,29 @@ impl AuthorizationCodeStore for PostgresAuthorizationCodeStore {
         Ok(())
     }
 
+    async fn get_code(&self, code: &str) -> Result<Option<AuthorizationCode>> {
+        let row = sqlx::query("SELECT * FROM authorization_codes WHERE code = $1 AND used = false")
+            .bind(code)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| StorageError::DatabaseError(e.to_string()))?;
+
+        match row {
+            Some(row) => {
+                let auth_code = Self::row_to_authorization_code(&row)?;
+
+                // Check if the code has expired
+                let now = Utc::now();
+                if auth_code.expires_at <= now {
+                    return Ok(None);
+                }
+
+                Ok(Some(auth_code))
+            }
+            None => Ok(None),
+        }
+    }
+
     async fn consume_code(&self, code: &str) -> Result<Option<AuthorizationCode>> {
         // Start a transaction to ensure atomicity
         let mut tx = self

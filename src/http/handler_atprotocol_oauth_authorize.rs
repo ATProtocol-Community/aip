@@ -82,7 +82,7 @@ pub async fn handle_oauth_authorize(
 /// Process authorization query parameters, handling both PAR and traditional OAuth
 async fn process_authorization_query(
     query: AuthorizeQuery,
-    storage: &Arc<dyn crate::storage::traits::OAuthStorage + Send + Sync>,
+    storage: &Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>,
     config: &crate::config::Config,
 ) -> Result<(AuthorizationRequest, AuthorizeQuery), Value> {
     // Handle PAR request (request_uri present)
@@ -377,7 +377,7 @@ mod tests {
         let config = create_test_config();
         let (request, _) = process_authorization_query(
             query,
-            &(storage as Arc<dyn crate::storage::traits::OAuthStorage + Send + Sync>),
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
             &config,
         )
         .await
@@ -412,7 +412,7 @@ mod tests {
         let config = create_test_config();
         let (request, _) = process_authorization_query(
             query,
-            &(storage as Arc<dyn crate::storage::traits::OAuthStorage + Send + Sync>),
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
             &config,
         )
         .await
@@ -444,7 +444,7 @@ mod tests {
         let config = create_test_config();
         let (request, _) = process_authorization_query(
             query,
-            &(storage as Arc<dyn crate::storage::traits::OAuthStorage + Send + Sync>),
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
             &config,
         )
         .await
@@ -481,7 +481,7 @@ mod tests {
         let config = create_test_config();
         let result = process_authorization_query(
             query,
-            &(storage as Arc<dyn crate::storage::traits::OAuthStorage + Send + Sync>),
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
             &config,
         )
         .await;
@@ -513,7 +513,7 @@ mod tests {
         let config = create_test_config();
         let result = process_authorization_query(
             query,
-            &(storage as Arc<dyn crate::storage::traits::OAuthStorage + Send + Sync>),
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
             &config,
         )
         .await;
@@ -545,7 +545,7 @@ mod tests {
         let config = create_test_config();
         let result = process_authorization_query(
             query,
-            &(storage as Arc<dyn crate::storage::traits::OAuthStorage + Send + Sync>),
+            &(storage as Arc<dyn crate::storage::traits::TransactionalStorage + Send + Sync>),
             &config,
         )
         .await;

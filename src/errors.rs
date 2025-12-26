@@ -216,6 +216,18 @@ pub enum StorageError {
     /// Error when requested resource is not found
     #[error("error-aip-storage-7 Not found: {0}")]
     NotFound(String),
+
+    /// Transaction failed and was rolled back
+    #[error("error-aip-storage-8 Transaction failed: {0}")]
+    TransactionFailed(String),
+
+    /// Transaction conflict (optimistic locking failure)
+    #[error("error-aip-storage-9 Transaction conflict: {0}")]
+    TransactionConflict(String),
+
+    /// Operation would violate consistency
+    #[error("error-aip-storage-10 Consistency violation: {0}")]
+    ConsistencyViolation(String),
 }
 
 pub type Result<T> = std::result::Result<T, HttpError>;

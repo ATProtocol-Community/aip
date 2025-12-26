@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::context::AppState;
+use super::utils_error::{
+    StorageOptionExt, StorageResultExt, bad_request, not_found, server_error, unauthorized,
+};
 use crate::{
     http::middleware_auth::ExtractedAuth, oauth::utils_app_password::create_app_password_session,
     storage::traits::AppPassword,
@@ -46,35 +49,22 @@ pub async fn get_app_password_handler(
     ExtractedAuth(access_token): ExtractedAuth,
 ) -> Result<StatusCode, (StatusCode, Json<Value>)> {
     // Extract DID from the access token
-    let did = access_token.user_id.as_ref().ok_or_else(|| {
-        let error_response = json!({
-            "error": "invalid_token",
-            "error_description": "Token missing user_id (DID)"
-        });
-        (StatusCode::UNAUTHORIZED, Json(error_response))
-    })?;
+    let did = access_token
+        .user_id
+        .as_ref()
+        .ok_or_else(|| unauthorized("Token missing user_id (DID)"))?;
 
     // Check if app password exists
     let existing = state
         .oauth_storage
         .get_app_password(&access_token.client_id, did)
         .await
-        .map_err(|e| {
-            let error_response = json!({
-                "error": "server_error",
-                "error_description": format!("Failed to check app password: {}", e)
-            });
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response))
-        })?;
+        .to_http_error("Failed to check app password")?;
 
     if existing.is_some() {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        let error_response = json!({
-            "error": "not_found",
-            "error_description": "No app password found for this client and user"
-        });
-        Err((StatusCode::NOT_FOUND, Json(error_response)))
+        Err(not_found("App password for this client and user"))
     }
 }
 
@@ -90,21 +80,14 @@ pub async fn create_app_password_handler(
     Form(form): Form<AppPasswordForm>,
 ) -> Result<Json<AppPasswordResponse>, (StatusCode, Json<Value>)> {
     // Extract DID from the access token
-    let did = access_token.user_id.as_ref().ok_or_else(|| {
-        let error_response = json!({
-            "error": "invalid_token",
-            "error_description": "Token missing user_id (DID)"
-        });
-        (StatusCode::UNAUTHORIZED, Json(error_response))
-    })?;
+    let did = access_token
+        .user_id
+        .as_ref()
+        .ok_or_else(|| unauthorized("Token missing user_id (DID)"))?;
 
     // Validate app password is not empty
     if form.app_password.trim().is_empty() {
-        let error_response = json!({
-            "error": "invalid_request",
-            "error_description": "App password cannot be empty"
-        });
-        return Err((StatusCode::BAD_REQUEST, Json(error_response)));
+        return Err(bad_request("App password cannot be empty"));
     }
 
     // Store the app password as clear text
@@ -117,13 +100,7 @@ pub async fn create_app_password_handler(
         .oauth_storage
         .get_app_password(&access_token.client_id, did)
         .await
-        .map_err(|e| {
-            let error_response = json!({
-                "error": "server_error",
-                "error_description": format!("Failed to check existing password: {}", e)
-            });
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response))
-        })?;
+        .to_http_error("Failed to check existing password")?;
 
     let is_update = existing.is_some();
 
@@ -133,13 +110,7 @@ pub async fn create_app_password_handler(
             .oauth_storage
             .delete_app_password_sessions(&access_token.client_id, did)
             .await
-            .map_err(|e| {
-                let error_response = json!({
-                    "error": "server_error",
-                    "error_description": format!("Failed to delete existing sessions: {}", e)
-                });
-                (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response))
-            })?;
+            .to_http_error("Failed to delete existing sessions")?;
     }
 
     // Create app password entry
@@ -156,33 +127,15 @@ pub async fn create_app_password_handler(
         .oauth_storage
         .store_app_password(&app_password_entry)
         .await
-        .map_err(|e| {
-            let error_response = json!({
-                "error": "server_error",
-                "error_description": format!("Failed to store app password: {}", e)
-            });
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response))
-        })?;
+        .to_http_error("Failed to store app password")?;
 
     // Get the DID document to extract PDS endpoint for session creation
     let document = state
         .document_storage
         .get_document_by_did(did)
         .await
-        .map_err(|e| {
-            let error_response = json!({
-                "error": "server_error",
-                "error_description": format!("Failed to get DID document: {}", e)
-            });
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(error_response))
-        })?
-        .ok_or_else(|| {
-            let error_response = json!({
-                "error": "not_found",
-                "error_description": "DID document not found"
-            });
-            (StatusCode::NOT_FOUND, Json(error_response))
-        })?;
+        .map_err(|e| server_error(format!("Failed to get DID document: {}", e)))?
+        .require("DID document")?;
 
     // Get PDS endpoint from document
     let pds_endpoints: Vec<String> = document
@@ -190,13 +143,9 @@ pub async fn create_app_password_handler(
         .into_iter()
         .map(|s| s.to_string())
         .collect();
-    let pds_endpoint = pds_endpoints.first().ok_or_else(|| {
-        let error_response = json!({
-            "error": "invalid_configuration",
-            "error_description": "No PDS endpoint found in DID document"
-        });
-        (StatusCode::BAD_REQUEST, Json(error_response))
-    })?;
+    let pds_endpoint = pds_endpoints
+        .first()
+        .ok_or_else(|| bad_request("No PDS endpoint found in DID document"))?;
 
     // Create app-password session before storing the password
     create_app_password_session(
@@ -209,11 +158,13 @@ pub async fn create_app_password_handler(
     )
     .await
     .map_err(|e| {
-        let error_response = json!({
-            "error": "authentication_failed",
-            "error_description": format!("Failed to create app-password session: {}", e)
-        });
-        (StatusCode::UNAUTHORIZED, Json(error_response))
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(json!({
+                "error": "authentication_failed",
+                "error_description": format!("Failed to create app-password session: {}", e)
+            })),
+        )
     })?;
 
     let response = AppPasswordResponse {

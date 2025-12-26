@@ -14,7 +14,7 @@ use crate::oauth::{
     atprotocol_bridge::{AtpOAuthSessionStorage, AuthorizationRequestStorage},
     clients::registration::ClientRegistrationService,
 };
-use crate::storage::traits::OAuthStorage;
+use crate::storage::traits::TransactionalStorage;
 use crate::{config::Config, oauth::DPoPNonceProvider};
 
 #[cfg(feature = "reload")]
@@ -47,8 +47,8 @@ pub struct AppState {
     pub oauth_request_storage: Arc<dyn OAuthRequestStorage + Send + Sync>,
     /// DID document storage
     pub document_storage: Arc<dyn DidDocumentStorage + Send + Sync>,
-    /// OAuth storage for tokens, clients, and codes
-    pub oauth_storage: Arc<dyn OAuthStorage + Send + Sync>,
+    /// OAuth storage for tokens, clients, and codes (supports atomic operations)
+    pub oauth_storage: Arc<dyn TransactionalStorage + Send + Sync>,
 
     /// Client registration service for dynamic client registration
     pub client_registration_service: Arc<ClientRegistrationService>,
