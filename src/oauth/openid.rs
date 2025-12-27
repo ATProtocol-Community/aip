@@ -175,8 +175,13 @@ impl OpenIDClaims {
         self
     }
 
-    /// Set DID
+    /// Set DID and subject identifier
+    ///
+    /// In OIDC for ATProtocol, the DID is the subject identifier (`sub` claim).
+    /// This method sets both `did` and `sub` to ensure OIDC compliance.
     pub fn with_did(mut self, did: Option<String>) -> Self {
+        // The DID is the subject identifier in ATProtocol OIDC
+        self.sub = did.clone();
         self.did = did;
         self
     }
