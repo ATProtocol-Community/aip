@@ -33,7 +33,7 @@ People (bringyourowncomputer/people, OVHP-87) administers.
    - `log` mode audits every decision
      (`tracing::info! … "network_access_decision", did/client_id/allowed/rule`)
      and never blocks; `enforce` mode refuses denied DIDs with
-     `error-aip-access-1`. Upstream unreachable → fail-open (unless
+     `error-aip-oauth-11` (upstream Access denied). Upstream unreachable → fail-open (unless
      `ACCESS_POLICY_FAIL_OPEN=false`).
    - Rollout: deploy in `log` mode, review the audit lines, then flip to
      `enforce` once rules are pre-allowlisted.
