@@ -26,6 +26,7 @@ pub use crate::storage::traits::AtpOAuthSession;
 #[derive(Clone, Debug)]
 pub struct AccessPolicyConfig {
     pub endpoint: Option<String>,
+    pub decisions_endpoint: Option<String>,
     pub auth_token: Option<String>,
     pub mode: AccessPolicyMode,
     pub fail_open: bool,
@@ -35,6 +36,7 @@ impl AccessPolicyConfig {
     pub fn disabled() -> Self {
         Self {
             endpoint: None,
+            decisions_endpoint: None,
             auth_token: None,
             mode: AccessPolicyMode::Log,
             fail_open: true,
@@ -239,6 +241,31 @@ impl AtpBackedAuthorizationServer {
             mode = ?self.access_policy.mode,
             "network_access_decision"
         );
+        // Forward the decision to People for the queryable audit trail.
+        if let Some(decisions_endpoint) = self.access_policy.decisions_endpoint.as_deref() {
+            let body = serde_json::json!({
+                "did": did,
+                "client_id": client_id,
+                "allowed": allowed,
+                "mode": format!("{:?}", self.access_policy.mode).to_lowercase(),
+                "rule": rule,
+            });
+            let mut decision_request = self.http_client.post(decisions_endpoint).json(&body);
+            if let Some(token) = self.access_policy.auth_token.as_deref() {
+                decision_request = decision_request.bearer_auth(token);
+            }
+            match decision_request.send().await {
+                Ok(response) if response.status().is_success() => {}
+                Ok(response) => tracing::warn!(
+                    status = %response.status(),
+                    "access decision audit: People ingest rejected"
+                ),
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    "access decision audit: People ingest unreachable"
+                ),
+            }
+        }
         Ok(allowed)
     }
 
