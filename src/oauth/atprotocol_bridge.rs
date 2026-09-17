@@ -6,6 +6,7 @@ use crate::oauth::{
     auth_server::{AuthorizationServer, AuthorizeResponse},
     types::*,
 };
+use crate::oauth::utils_atprotocol_oauth::fetch_email_from_pds;
 use atproto_identity::key::{KeyType, generate_key, identify_key, to_public};
 use atproto_oauth::resources::{oauth_authorization_server, oauth_protected_resource};
 use atproto_oauth::scopes::Scope;
@@ -196,6 +197,7 @@ impl AtpBackedAuthorizationServer {
         did: &str,
         client_id: &str,
         handle: Option<&str>,
+        email: Option<&str>,
     ) -> Result<bool, OAuthError> {
         let Some(endpoint) = self.access_policy.endpoint.as_deref() else {
             return Ok(true);
@@ -243,6 +245,7 @@ impl AtpBackedAuthorizationServer {
             did,
             client_id,
             handle,
+            email,
             allowed,
             rule = ?rule,
             mode = ?self.access_policy.mode,
@@ -254,6 +257,7 @@ impl AtpBackedAuthorizationServer {
                 "did": did,
                 "client_id": client_id,
                 "handle": handle,
+                "email": email,
                 "allowed": allowed,
                 "mode": format!("{:?}", self.access_policy.mode).to_lowercase(),
                 "rule": rule,
@@ -810,8 +814,31 @@ impl AtpBackedAuthorizationServer {
             .first()
             .and_then(|uri| uri.strip_prefix("at://"))
             .map(|h| h.to_string());
+        // Email comes straight from the user's PDS (atproto = source of
+        // truth): same call userinfo makes (com.atproto.server.getSession via
+        // the atproto access token + DPoP). Never blocks login on failure.
+        let email = match (
+            updated_session.access_token.as_deref(),
+            atpoauth_document.pds_endpoints().first(),
+        ) {
+            (Some(token), Some(pds)) => fetch_email_from_pds(
+                &self.http_client,
+                token,
+                &updated_session.dpop_key,
+                pds,
+            )
+            .await
+            .ok()
+            .flatten(),
+            _ => None,
+        };
         let allowed = self
-            .check_network_access(&token_subject, &client_id, handle.as_deref())
+            .check_network_access(
+                &token_subject,
+                &client_id,
+                handle.as_deref(),
+                email.as_deref(),
+            )
             .await?;
         if !allowed && self.access_policy.mode == AccessPolicyMode::Enforce {
             tracing::warn!(did = %token_subject, client_id = %client_id, "login blocked by network policy");

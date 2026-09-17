@@ -393,7 +393,7 @@ struct AtpGetSessionResponse {
 }
 
 /// Fetch email from ATProtocol PDS using DPoP
-async fn fetch_email_from_pds(
+pub(crate) async fn fetch_email_from_pds(
     http_client: &reqwest::Client,
     atp_access_token: &str,
     dpop_key: &str,
