@@ -102,6 +102,11 @@ pub struct Config {
     pub atproto_client_tos: AtprotoClientTos,
     pub atproto_client_policy: AtprotoClientPolicy,
     pub internal_device_auth_client_id: InternalDeviceAuthClientId,
+    // Our fork (OVHP-87): network allow-list gate against People.
+    pub access_policy_endpoint: Option<String>,
+    pub access_policy_auth_token: Option<String>,
+    pub access_policy_mode: String, // "log" (default) | "enforce"
+    pub access_policy_fail_open: bool,
 }
 
 impl Config {
@@ -154,6 +159,16 @@ impl Config {
         let internal_device_auth_client_id: InternalDeviceAuthClientId =
             default_env("INTERNAL_DEVICE_AUTH_CLIENT_ID", "aip-internal-device-auth").try_into()?;
 
+        // Network allow-list gate (our fork, OVHP-87): People's check endpoint.
+        let access_policy_endpoint = optional_env("ACCESS_POLICY_ENDPOINT");
+        let access_policy_auth_token = optional_env("ACCESS_POLICY_AUTH_TOKEN");
+        let access_policy_mode = default_env("ACCESS_POLICY_MODE", "log");
+        // Fail-open by default: an upstream People error must not lock out
+        // every login. Set ACCESS_POLICY_FAIL_OPEN=false to fail closed.
+        let access_policy_fail_open = optional_env("ACCESS_POLICY_FAIL_OPEN")
+            .map(|v| v != "false" && v != "0")
+            .unwrap_or(true);
+
         Ok(Self {
             version: version()?,
             http_port,
@@ -182,6 +197,10 @@ impl Config {
             atproto_client_tos,
             atproto_client_policy,
             internal_device_auth_client_id,
+            access_policy_endpoint,
+            access_policy_auth_token,
+            access_policy_mode,
+            access_policy_fail_open,
         })
     }
 }

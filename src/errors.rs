@@ -89,6 +89,10 @@ pub enum OAuthError {
     #[error("error-aip-oauth-7 Invalid scope: {0}")]
     InvalidScope(String),
 
+    /// Network access denied by the People allow-list (our fork, OVHP-87)
+    #[error("error-aip-access-1 Access denied by network policy: {0}")]
+    AccessDenied(String),
+
     /// Invalid request
     #[error("error-aip-oauth-8 Invalid request: {0}")]
     InvalidRequest(String),
