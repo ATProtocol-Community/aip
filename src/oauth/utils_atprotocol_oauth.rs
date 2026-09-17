@@ -63,6 +63,7 @@ pub async fn create_atp_backed_server(
         // Our fork (OVHP-87): network allow-list gate settings.
         AccessPolicyConfig {
             endpoint: state.config.access_policy_endpoint.clone(),
+            decisions_endpoint: state.config.access_policy_decisions_endpoint.clone(),
             auth_token: state.config.access_policy_auth_token.clone(),
             mode: AccessPolicyMode::from(state.config.access_policy_mode.as_str()),
             fail_open: state.config.access_policy_fail_open,
