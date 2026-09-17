@@ -189,8 +189,14 @@ impl AtpBackedAuthorizationServer {
     /// Asks People's check API whether `did` may reach `client_id`.
     /// Returns `Ok(true)` when the gate is disabled, when the upstream is
     /// unreachable and `fail_open`, or when People says allowed. Every decision
-    /// is audit-logged at INFO (`network_access_decision`).
-    async fn check_network_access(&self, did: &str, client_id: &str) -> Result<bool, OAuthError> {
+    /// is audit-logged at INFO (`network_access_decision`) and forwarded to
+    /// People (decisions_endpoint) for the queryable trail.
+    async fn check_network_access(
+        &self,
+        did: &str,
+        client_id: &str,
+        handle: Option<&str>,
+    ) -> Result<bool, OAuthError> {
         let Some(endpoint) = self.access_policy.endpoint.as_deref() else {
             return Ok(true);
         };
@@ -236,6 +242,7 @@ impl AtpBackedAuthorizationServer {
         tracing::info!(
             did,
             client_id,
+            handle,
             allowed,
             rule = ?rule,
             mode = ?self.access_policy.mode,
@@ -246,6 +253,7 @@ impl AtpBackedAuthorizationServer {
             let body = serde_json::json!({
                 "did": did,
                 "client_id": client_id,
+                "handle": handle,
                 "allowed": allowed,
                 "mode": format!("{:?}", self.access_policy.mode).to_lowercase(),
                 "rule": rule,
@@ -797,7 +805,14 @@ impl AtpBackedAuthorizationServer {
         // completing the base OAuth flow. Mode "log" audits only; mode
         // "enforce" refuses denied DIDs.
         let client_id = authorization_request.client_id.clone();
-        let allowed = self.check_network_access(&token_subject, &client_id).await?;
+        let handle = atpoauth_document
+            .also_known_as
+            .first()
+            .and_then(|uri| uri.strip_prefix("at://"))
+            .map(|h| h.to_string());
+        let allowed = self
+            .check_network_access(&token_subject, &client_id, handle.as_deref())
+            .await?;
         if !allowed && self.access_policy.mode == AccessPolicyMode::Enforce {
             tracing::warn!(did = %token_subject, client_id = %client_id, "login blocked by network policy");
             return Err(OAuthError::AccessDenied(format!(

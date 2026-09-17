@@ -26,7 +26,7 @@ People (bringyourowncomputer/people, OVHP-87) administers.
    `src/config.rs` + `src/errors.rs`:
    - Config: `ACCESS_POLICY_ENDPOINT` (People's check URL),
      `ACCESS_POLICY_DECISIONS_ENDPOINT` (People's decision ingest — AIP forwards
-     every login decision for the queryable audit trail), `ACCESS_POLICY_AUTH_TOKEN`
+     every login decision incl. handle for the queryable audit trail), `ACCESS_POLICY_AUTH_TOKEN`
      (the shared bearer People requires), `ACCESS_POLICY_MODE` (`log` default |
      `enforce`), `ACCESS_POLICY_FAIL_OPEN` (default true).
    - In `handle_atp_callback_impl`, **after the DID is resolved, before
