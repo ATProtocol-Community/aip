@@ -22,6 +22,41 @@ use uuid::Uuid;
 // Re-export unified storage types
 pub use crate::storage::traits::AtpOAuthSession;
 
+/// Network allow-list gate settings (our fork, OVHP-87).
+#[derive(Clone, Debug)]
+pub struct AccessPolicyConfig {
+    pub endpoint: Option<String>,
+    pub auth_token: Option<String>,
+    pub mode: AccessPolicyMode,
+    pub fail_open: bool,
+}
+
+impl AccessPolicyConfig {
+    pub fn disabled() -> Self {
+        Self {
+            endpoint: None,
+            auth_token: None,
+            mode: AccessPolicyMode::Log,
+            fail_open: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccessPolicyMode {
+    Log,
+    Enforce,
+}
+
+impl From<&str> for AccessPolicyMode {
+    fn from(value: &str) -> Self {
+        match value.to_ascii_lowercase().as_str() {
+            "enforce" => Self::Enforce,
+            _ => Self::Log,
+        }
+    }
+}
+
 /// Storage trait for ATProtocol OAuth sessions (legacy interface)
 #[async_trait::async_trait]
 pub trait AtpOAuthSessionStorage: Send + Sync {
@@ -110,6 +145,8 @@ pub struct AtpBackedAuthorizationServer {
     authorization_request_storage: Arc<dyn AuthorizationRequestStorage>,
     /// External base URL for callbacks
     external_base: String,
+    /// Network allow-list gate (our fork, OVHP-87)
+    access_policy: AccessPolicyConfig,
 }
 
 impl AtpBackedAuthorizationServer {
@@ -124,6 +161,7 @@ impl AtpBackedAuthorizationServer {
         document_storage: Arc<dyn atproto_identity::traits::DidDocumentStorage + Send + Sync>,
         authorization_request_storage: Arc<dyn AuthorizationRequestStorage>,
         external_base: String,
+        access_policy: AccessPolicyConfig,
     ) -> Self {
         Self {
             base_auth_server,
@@ -135,12 +173,73 @@ impl AtpBackedAuthorizationServer {
             document_storage,
             authorization_request_storage,
             external_base,
+            access_policy,
         }
     }
 
     /// Get a reference to the session storage
     pub fn session_storage(&self) -> &Arc<dyn AtpOAuthSessionStorage> {
         &self.session_storage
+    }
+
+    /// Network allow-list check (our fork, OVHP-87).
+    ///
+    /// Asks People's check API whether `did` may reach `client_id`.
+    /// Returns `Ok(true)` when the gate is disabled, when the upstream is
+    /// unreachable and `fail_open`, or when People says allowed. Every decision
+    /// is audit-logged at INFO (`network_access_decision`).
+    async fn check_network_access(&self, did: &str, client_id: &str) -> Result<bool, OAuthError> {
+        let Some(endpoint) = self.access_policy.endpoint.as_deref() else {
+            return Ok(true);
+        };
+        let params = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("did", did)
+            .append_pair("client_id", client_id)
+            .finish();
+        let url = format!("{endpoint}?{params}");
+        let mut request = self.http_client.get(&url);
+        if let Some(token) = self.access_policy.auth_token.as_deref() {
+            request = request.bearer_auth(token);
+        }
+        let decision = match request.send().await {
+            Ok(response) => {
+                let status = response.status();
+                match response.json::<serde_json::Value>().await {
+                    Ok(body) => {
+                        let allowed = body
+                            .get("allowed")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(self.access_policy.fail_open);
+                        Some((allowed, body.get("rule").cloned()))
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            status = %status,
+                            "network access check: upstream returned a non-JSON body"
+                        );
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "network access check: upstream unreachable");
+                None
+            }
+        };
+        let (allowed, rule) = match decision {
+            Some(value) => value,
+            None => return Ok(self.access_policy.fail_open),
+        };
+        tracing::info!(
+            did,
+            client_id,
+            allowed,
+            rule = ?rule,
+            mode = ?self.access_policy.mode,
+            "network_access_decision"
+        );
+        Ok(allowed)
     }
 
     /// Get a reference to the HTTP client
@@ -666,6 +765,19 @@ impl AtpBackedAuthorizationServer {
         // Clone session_id before it gets moved
         let session_id = session.session_id.clone();
 
+        // Our fork (OVHP-87): the network allow-list gate. The DID is resolved
+        // and the client being logged into is known — check People before
+        // completing the base OAuth flow. Mode "log" audits only; mode
+        // "enforce" refuses denied DIDs.
+        let client_id = authorization_request.client_id.clone();
+        let allowed = self.check_network_access(&token_subject, &client_id).await?;
+        if !allowed && self.access_policy.mode == AccessPolicyMode::Enforce {
+            tracing::warn!(did = %token_subject, client_id = %client_id, "login blocked by network policy");
+            return Err(OAuthError::AccessDenied(format!(
+                "did {token_subject} is not allowed to sign in to client {client_id}"
+            )));
+        }
+
         // Now complete the base OAuth flow using the ATProtocol identity as the user_id
         let auth_response = self
             .base_auth_server
@@ -1047,6 +1159,7 @@ mod tests {
             document_storage,
             authorization_request_storage,
             "https://localhost".to_string(),
+            AccessPolicyConfig::disabled(),
         )
     }
 

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use crate::http::AppState;
-use crate::oauth::atprotocol_bridge::AtpOAuthSession;
+use crate::oauth::atprotocol_bridge::{AccessPolicyConfig, AccessPolicyMode, AtpOAuthSession};
 use crate::oauth::openid::OpenIDClaims;
 use crate::oauth::{AtpBackedAuthorizationServer, auth_server::AuthorizationServer};
 use atproto_client::client::{DPoPAuth, get_dpop_json_with_headers};
@@ -61,6 +61,13 @@ pub async fn create_atp_backed_server(
         state.document_storage.clone(),
         state.authorization_request_storage.clone(),
         state.config.external_base.clone(),
+        // Our fork (OVHP-87): network allow-list gate settings.
+        AccessPolicyConfig {
+            endpoint: state.config.access_policy_endpoint.clone(),
+            auth_token: state.config.access_policy_auth_token.clone(),
+            mode: AccessPolicyMode::from(state.config.access_policy_mode.as_str()),
+            fail_open: state.config.access_policy_fail_open,
+        },
     ))
 }
 
