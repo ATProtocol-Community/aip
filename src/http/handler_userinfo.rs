@@ -150,11 +150,12 @@ pub async fn get_userinfo_handler(
                 )
                 .await
                 {
-                    Ok(Some((email, email_verified))) => {
-                        final_claims =
-                            final_claims.with_email(Some(email)).with_email_verified(email_verified);
+                    Ok((email, email_verified)) => {
+                        if email.is_some() {
+                            final_claims =
+                                final_claims.with_email(email).with_email_verified(email_verified);
+                        }
                     }
-                    Ok(None) => {}
                     Err(e) => {
                         tracing::warn!(%user_id, error = %e, "app-password email fetch failed");
                     }
