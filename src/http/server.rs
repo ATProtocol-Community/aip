@@ -24,6 +24,7 @@ use super::{
     },
     handler_device_code::device_authorization_handler,
     handler_index::handle_index,
+    handler_introspect::handle_introspect,
     handler_oauth::handle_oauth_token,
     handler_oauth_clients::{
         app_delete_client_handler, app_get_client_handler, app_register_client_handler,
@@ -59,6 +60,7 @@ pub fn build_router(ctx: AppState) -> Router {
         .route("/authorize", get(handle_oauth_authorize))
         .route("/authorize/app-password", post(handle_app_password_login))
         .route("/token", post(handle_oauth_token))
+        .route("/introspect", post(handle_introspect))
         .route("/avatar/{cid}", get(handle_avatar))
         .route("/device", post(device_authorization_handler))
         .route("/userinfo", get(get_userinfo_handler))
@@ -218,6 +220,11 @@ mod tests {
                 .to_string()
                 .try_into()
                 .unwrap(),
+            access_policy_endpoint: None,
+            access_policy_decisions_endpoint: None,
+            access_policy_auth_token: None,
+            access_policy_mode: "log".to_string(),
+            access_policy_fail_open: true,
         });
 
         let atp_session_storage = Arc::new(

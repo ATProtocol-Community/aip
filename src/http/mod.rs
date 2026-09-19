@@ -12,6 +12,7 @@ mod handler_device_authorization;
 mod handler_device_code;
 
 mod handler_index;
+mod handler_introspect;
 mod handler_oauth;
 mod handler_oauth_clients;
 mod handler_par;
