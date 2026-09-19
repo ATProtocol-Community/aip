@@ -509,6 +509,11 @@ mod tests {
                 .to_string()
                 .try_into()
                 .unwrap(),
+            access_policy_endpoint: None,
+            access_policy_decisions_endpoint: None,
+            access_policy_auth_token: None,
+            access_policy_mode: "log".to_string(),
+            access_policy_fail_open: true,
         };
 
         let auth_request =
@@ -597,6 +602,11 @@ mod tests {
                 .to_string()
                 .try_into()
                 .unwrap(),
+            access_policy_endpoint: None,
+            access_policy_decisions_endpoint: None,
+            access_policy_auth_token: None,
+            access_policy_mode: "log".to_string(),
+            access_policy_fail_open: true,
         };
 
         let result = validate_and_convert_par_request(&par_request, &client, &test_config);
@@ -683,6 +693,11 @@ mod tests {
                 .to_string()
                 .try_into()
                 .unwrap(),
+            access_policy_endpoint: None,
+            access_policy_decisions_endpoint: None,
+            access_policy_auth_token: None,
+            access_policy_mode: "log".to_string(),
+            access_policy_fail_open: true,
         };
 
         let result = validate_and_convert_par_request(&par_request, &client, &test_config);

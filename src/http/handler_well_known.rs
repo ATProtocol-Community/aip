@@ -214,6 +214,11 @@ mod tests {
                 .to_string()
                 .try_into()
                 .unwrap(),
+            access_policy_endpoint: None,
+            access_policy_decisions_endpoint: None,
+            access_policy_auth_token: None,
+            access_policy_mode: "log".to_string(),
+            access_policy_fail_open: true,
         });
 
         let atp_session_storage = Arc::new(

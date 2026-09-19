@@ -46,6 +46,11 @@ impl AuthorizationServer {
         }
     }
 
+    /// Get the server issuer URL (external base)
+    pub fn issuer(&self) -> &str {
+        &self.issuer
+    }
+
     /// Handle authorization requests (RFC 6749 Section 4.1.1)
     pub async fn authorize(
         &self,
