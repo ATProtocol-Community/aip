@@ -150,8 +150,9 @@ pub async fn get_userinfo_handler(
                 )
                 .await
                 {
-                    Ok(Some(email)) => {
-                        final_claims = final_claims.with_email(Some(email));
+                    Ok(Some((email, email_verified))) => {
+                        final_claims =
+                            final_claims.with_email(Some(email)).with_email_verified(email_verified);
                     }
                     Ok(None) => {}
                     Err(e) => {

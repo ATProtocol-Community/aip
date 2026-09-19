@@ -24,6 +24,9 @@ struct CreateSessionResponse {
     /// The account's email (absent when the PDS has no email or scope denies).
     #[serde(default)]
     email: Option<String>,
+    /// Whether the PDS considers the email confirmed.
+    #[serde(rename = "emailConfirmed", default)]
+    email_confirmed: bool,
 }
 
 
@@ -122,7 +125,7 @@ pub async fn fetch_account_email_with_app_password(
     did: &str,
     app_password: &str,
     pds_endpoint: &str,
-) -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(Option<String>, Option<bool>), Box<dyn std::error::Error + Send + Sync>> {
     let create_session_url = format!("{}/xrpc/com.atproto.server.createSession", pds_endpoint);
 
     let request_body = CreateSessionRequest {
@@ -152,7 +155,7 @@ pub async fn fetch_account_email_with_app_password(
         .await
         .map_err(|e| format!("ATProtocol createSession response parse error: {}", e))?;
 
-    Ok(session_response.email)
+    Ok((session_response.email, Some(session_response.email_confirmed)))
 }
 
 /// Refresh an app-password session using ATProtocol refreshSession XRPC

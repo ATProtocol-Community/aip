@@ -829,7 +829,7 @@ impl AtpBackedAuthorizationServer {
             )
             .await
             .ok()
-            .flatten(),
+            .and_then(|(email, _)| email),
             _ => None,
         };
         let allowed = self

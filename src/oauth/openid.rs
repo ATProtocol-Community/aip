@@ -66,6 +66,7 @@ pub struct OpenIDClaims {
     /// Email - The user's email address
     #[serde(skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    pub email_verified: Option<bool>,
 
     /// Additional claims
     #[serde(flatten)]
@@ -124,6 +125,7 @@ impl OpenIDClaims {
             picture: None,
             pds_endpoint: None,
             email: None,
+            email_verified: None,
             additional_claims: HashMap::new(),
         }
     }
@@ -152,6 +154,7 @@ impl OpenIDClaims {
             picture: None,
             pds_endpoint: None,
             email: None,
+            email_verified: None,
             additional_claims: HashMap::new(),
         }
     }
@@ -220,6 +223,17 @@ impl OpenIDClaims {
     /// Set email
     pub fn with_email(mut self, email: Option<String>) -> Self {
         self.email = email;
+        self
+    }
+
+/// Set email verification status (from the user's PDS `emailConfirmed`).
+    ///
+    /// OIDC clients (e.g. Grist with `GRIST_OIDC_SP_IGNORE_EMAIL_VERIFIED=false`)
+    /// require `email_verified === true` before accepting a login — leaving the
+    /// claim absent once email is present makes them refuse. Report the PDS's
+    /// actual confirmation.
+    pub fn with_email_verified(mut self, email_verified: Option<bool>) -> Self {
+        self.email_verified = email_verified;
         self
     }
 
