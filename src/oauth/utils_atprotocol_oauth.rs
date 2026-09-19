@@ -476,7 +476,7 @@ pub(crate) async fn fetch_email_from_pds(
     let atp_session: AtpGetSessionResponse = serde_json::from_value(session_response)
         .map_err(|e| format!("Failed to parse ATProtocol session response: {}", e))?;
 
-    Ok(atp_session.email)
+    Ok((atp_session.email, atp_session.email_confirmed))
 }
 
 /// ATProtocol profile record (`app.bsky.actor.profile`, rkey `self`).
