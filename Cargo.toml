@@ -36,6 +36,7 @@ redis = { version = "0.27", optional = true }
 deadpool = { version = "0.12", optional = true }
 deadpool-redis = { version = "0.18", optional = true }
 anyhow = "1.0"
+bytes = "1.0"
 thiserror = "1.0"
 tokio = { version = "1.41", features = ["macros", "rt", "rt-multi-thread", "fs", "signal", "sync"] }
 tokio-util = { version = "0.7", features = ["rt"] }
@@ -62,6 +63,7 @@ chrono = { version = "0.4", features = ["serde"] }
 metrohash = "1.0.7"
 crockford = "1.2.1"
 duration-str = "0.11"
+rust-s3 = { version = "0.34", default-features = false, features = ["tokio-rustls-tls"] }
 
 [dev-dependencies]
 axum-test = "15"

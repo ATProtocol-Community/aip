@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use bytes::Bytes;
 use crate::http::AppState;
 use crate::oauth::atprotocol_bridge::AtpOAuthSession;
 use crate::oauth::openid::OpenIDClaims;
@@ -348,6 +349,60 @@ pub async fn build_openid_claims_with_document_info(
         claims = claims.with_name(handle).with_pds_endpoint(pds_endpoint);
     }
 
+    // OVHP-117: mirror the profile avatar into the cluster Garage (S3) and
+    // expose the standard OIDC `picture` claim. Fail-open: any fetch/storage
+    // error omits the claim — userinfo never blocks on the avatar.
+    if can_provide_profile
+        && let Some(session) = session
+        && let Some((atp_access_token, pds_endpoint)) = session
+            .access_token
+            .as_deref()
+            .zip(document.pds_endpoints().first())
+        && let Some(storage) = crate::oauth::avatar_storage::AvatarStorage::from_env()
+    {
+        match fetch_profile_from_pds(
+            http_client,
+            atp_access_token,
+            &session.dpop_key,
+            &document.id,
+            pds_endpoint,
+        )
+        .await
+        {
+            Ok(profile) => {
+                if let Some(avatar) = profile.value.avatar {
+                    let cid = avatar.reference.link;
+                    match fetch_avatar_blob_from_pds(
+                        http_client,
+                        atp_access_token,
+                        &session.dpop_key,
+                        &document.id,
+                        &cid,
+                        pds_endpoint,
+                    )
+                    .await
+                    {
+                        Ok(bytes) => {
+                            if let Err(e) = storage.put(&cid, &bytes, &avatar.mime_type).await {
+                                tracing::warn!(error = %e, did = %document.id, "avatar storage put failed");
+                            } else if let Some(url) =
+                                crate::oauth::avatar_storage::picture_url(&cid)
+                            {
+                                claims = claims.with_picture(Some(url));
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, did = %document.id, "avatar blob fetch failed");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, did = %document.id, "profile fetch failed (avatar skipped)");
+            }
+        }
+    }
+
     // Add email information if we can provide it
     if can_provide_email && let Some(session) = session {
         let email = if let (Some(atp_access_token), Some(pds_endpoint)) =
@@ -415,6 +470,124 @@ async fn fetch_email_from_pds(
         .map_err(|e| format!("Failed to parse ATProtocol session response: {}", e))?;
 
     Ok(atp_session.email)
+}
+
+/// ATProtocol profile record (`app.bsky.actor.profile`, rkey `self`).
+#[derive(Debug, Deserialize)]
+pub struct AtpProfileRecord {
+    pub value: AtpProfileValue,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AtpProfileValue {
+    #[serde(rename = "displayName")]
+    pub display_name: Option<String>,
+    pub avatar: Option<AtpProfileAvatar>,
+}
+
+/// A blob reference from the profile (the `avatar` field).
+#[derive(Debug, Deserialize)]
+pub struct AtpProfileAvatar {
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    #[serde(rename = "ref")]
+    pub reference: AtpBlobRef,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AtpBlobRef {
+    #[serde(rename = "$link")]
+    pub link: String,
+}
+
+/// Fetch the user's atproto profile record from their PDS (OVHP-117).
+pub(crate) async fn fetch_profile_from_pds(
+    http_client: &reqwest::Client,
+    atp_access_token: &str,
+    dpop_key: &str,
+    did: &str,
+    pds_endpoint: &str,
+) -> Result<AtpProfileRecord, Box<dyn std::error::Error + Send + Sync>> {
+    let dpop_private_key =
+        identify_key(dpop_key).map_err(|e| format!("Failed to parse DPoP key: {}", e))?;
+    let dpop_auth = DPoPAuth {
+        dpop_private_key_data: dpop_private_key,
+        oauth_access_token: atp_access_token.to_string(),
+    };
+
+    let url = format!(
+        "{}/xrpc/com.atproto.repo.getRecord?repo={}&collection=app.bsky.actor.profile&rkey=self",
+        pds_endpoint, did
+    );
+
+    let value = get_dpop_json_with_headers(http_client, &dpop_auth, &url, &HeaderMap::new())
+        .await
+        .map_err(|e| format!("Failed to fetch profile from PDS: {}", e))?;
+
+    let record: AtpProfileRecord = serde_json::from_value(value)
+        .map_err(|e| format!("Failed to parse profile record response: {}", e))?;
+    Ok(record)
+}
+
+/// DPoP-protected GET returning raw bytes (mirrors the header shape of
+/// `get_dpop_json_with_headers`, minus the nonce-retry middleware).
+pub(crate) async fn get_dpop_bytes_with_headers(
+    http_client: &reqwest::Client,
+    dpop_auth: &DPoPAuth,
+    url: &str,
+) -> Result<Bytes, String> {
+    let (dpop_proof_token, _, _) = atproto_oauth::dpop::request_dpop(
+        &dpop_auth.dpop_private_key_data,
+        "GET",
+        url,
+        &dpop_auth.oauth_access_token,
+    )
+    .map_err(|e| format!("DPoP proof generation failed: {}", e))?;
+
+    let http_response = http_client
+        .get(url)
+        .header(
+            "Authorization",
+            format!("DPoP {}", dpop_auth.oauth_access_token),
+        )
+        .header("DPoP", &dpop_proof_token)
+        .send()
+        .await
+        .map_err(|e| format!("HTTP request failed: {}", e))?;
+
+    if !http_response.status().is_success() {
+        return Err(format!("getBlob {} -> {}", url, http_response.status()));
+    }
+
+    http_response
+        .bytes()
+        .await
+        .map_err(|e| format!("Failed to read response body: {}", e))
+}
+
+/// Fetch the avatar blob bytes from the user's PDS (`com.atproto.sync.getBlob`).
+pub(crate) async fn fetch_avatar_blob_from_pds(
+    http_client: &reqwest::Client,
+    atp_access_token: &str,
+    dpop_key: &str,
+    did: &str,
+    cid: &str,
+    pds_endpoint: &str,
+) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>> {
+    let dpop_private_key =
+        identify_key(dpop_key).map_err(|e| format!("Failed to parse DPoP key: {}", e))?;
+    let dpop_auth = DPoPAuth {
+        dpop_private_key_data: dpop_private_key,
+        oauth_access_token: atp_access_token.to_string(),
+    };
+
+    let url = format!(
+        "{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}",
+        pds_endpoint, did, cid
+    );
+
+    let bytes = get_dpop_bytes_with_headers(http_client, &dpop_auth, &url).await?;
+    Ok(bytes)
 }
 
 #[cfg(test)]

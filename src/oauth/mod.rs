@@ -2,6 +2,7 @@
 
 pub mod atprotocol_bridge;
 pub mod auth_server;
+pub mod avatar_storage;
 pub mod clients;
 pub mod dpop;
 pub mod dpop_nonce;
