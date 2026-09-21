@@ -50,6 +50,10 @@ pub struct OpenIDClaims {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 
+    /// Preferred username - the user's atproto handle (no '@'; OVHP-119)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<String>,
+
     /// Profile - The user's profile URL
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
@@ -201,6 +205,30 @@ impl OpenIDClaims {
             && name != "unknown"
         {
             self.profile = Some(format!("https://bsky.app/profile/{}", name));
+        }
+        self
+    }
+
+    /// Set preferred_username (atproto handle, no '@'; OVHP-119)
+    pub fn with_preferred_username(mut self, value: Option<String>) -> Self {
+        self.preferred_username = value;
+        self
+    }
+
+    /// Set name = Bluesky profile display name (fallback: handle) and
+    /// profile URL always from the handle (OVHP-119). Both are
+    /// user-controllable (display name user-set, handle user-chosen).
+    pub fn with_display_name_and_handle(
+        mut self,
+        display_name: Option<String>,
+        handle: Option<String>,
+    ) -> Self {
+        let handle = handle.or(Some("unknown".to_string()));
+        self.name = display_name
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| Some(handle.clone()));
+        if handle != "unknown" {
+            self.profile = Some(format!("https://bsky.app/profile/{}", handle));
         }
         self
     }

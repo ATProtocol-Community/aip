@@ -344,9 +344,33 @@ pub async fn build_openid_claims_with_document_info(
     // Add profile information if we can provide it
     if can_provide_profile {
         let handle = document.handles().map(|h| h.to_string());
-        let pds_endpoint = document.pds_endpoints().first().map(|v| v.to_string());
+        let pds_endpoint = document.pds_endpoints().first().cloned();
 
-        claims = claims.with_name(handle).with_pds_endpoint(pds_endpoint);
+        // OVHP-119: expose user-controllable identity claims —
+        // preferred_username = atproto handle (no '@'), name = Bluesky profile
+        // display name (fallback: handle). Prefer the PDS public profile
+        // (app.bsky.actor.getProfile needs no auth — also works for
+        // app-password logins); fall back to the DID-document handle.
+        if let Some(pds) = pds_endpoint.as_deref() {
+            match fetch_public_profile(http_client, &document.id, pds).await {
+                Ok(Some(p)) => {
+                    let h = p.handle.or_else(|| handle.clone());
+                    claims = claims
+                        .with_preferred_username(h.clone())
+                        .with_display_name_and_handle(p.display_name, h);
+                }
+                _ => {
+                    claims = claims
+                        .with_preferred_username(handle.clone())
+                        .with_display_name_and_handle(None, handle);
+                }
+            }
+        } else {
+            claims = claims
+                .with_preferred_username(handle.clone())
+                .with_display_name_and_handle(None, handle);
+        }
+        claims = claims.with_pds_endpoint(pds_endpoint);
     }
 
     // OVHP-117: mirror the profile avatar into the cluster Garage (S3) and
@@ -498,6 +522,33 @@ pub struct AtpProfileAvatar {
 pub struct AtpBlobRef {
     #[serde(rename = "$link")]
     pub link: String,
+}
+
+/// Public atproto profile view (`app.bsky.actor.getProfile`) — no auth needed.
+#[derive(Debug, Deserialize)]
+pub struct PublicProfileView {
+    pub handle: String,
+    #[serde(rename = "displayName", default)]
+    pub display_name: Option<String>,
+}
+
+/// Fetch the current handle + display name from the PDS public getProfile
+/// endpoint (OVHP-119). Fail-open (Ok(None)) — userinfo never blocks.
+pub(crate) async fn fetch_public_profile(
+    http_client: &reqwest::Client,
+    did: &str,
+    pds_endpoint: &str,
+) -> Result<Option<PublicProfileView>, reqwest::Error> {
+    let url = format!(
+        "{}/xrpc/app.bsky.actor.getProfile?actor={}",
+        pds_endpoint, did
+    );
+    let resp = http_client.get(&url).send().await?;
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+    let view: PublicProfileView = resp.json().await?;
+    Ok(Some(view))
 }
 
 /// Fetch the user's atproto profile record from their PDS (OVHP-117).

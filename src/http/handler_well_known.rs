@@ -98,7 +98,7 @@ pub async fn openid_configuration_handler(State(state): State<AppState>) -> Json
         "id_token_signing_alg_values_supported": ["ES256"],
         "userinfo_signed_response_alg": ["ES256"],
         "scopes_supported": state.config.oauth_supported_scopes.as_strings(),
-        "claims_supported": ["iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "at_hash", "c_hash", "email", "did", "name", "profile", "pds_endpoint"],
+        "claims_supported": ["iss", "sub", "aud", "exp", "iat", "auth_time", "nonce", "at_hash", "c_hash", "email", "did", "name", "preferred_username", "profile", "pds_endpoint"],
         "grant_types_supported": ["authorization_code", "refresh_token"],
         "response_modes_supported": ["query", "fragment"],
         "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none", "private_key_jwt"],
