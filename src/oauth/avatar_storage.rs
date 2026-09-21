@@ -87,20 +87,35 @@ impl AvatarStorage {
     /// Upload (idempotent by design — objects are keyed by their atproto blob
     /// CID, so re-uploading the same avatar overwrites with identical bytes).
     pub async fn put(&self, cid: &str, bytes: &[u8], content_type: &str) -> Result<(), String> {
-        self.bucket
+        let response = self
+            .bucket
             .put_object_with_content_type(cid, bytes, content_type)
             .await
-            .map(|_| ())
-            .map_err(|e| format!("avatar storage put failed: {}", e))
+            .map_err(|e| format!("avatar storage put failed: {}", e))?;
+        if !(200..300).contains(&response.status_code()) {
+            return Err(format!(
+                "avatar storage put -> HTTP {}",
+                response.status_code()
+            ));
+        }
+        Ok(())
     }
 
-    /// Fetch an object; returns `(bytes, content_type)`.
+    /// Fetch an object; returns `(bytes, content_type)`. Non-2xx (including
+    /// Garage XML error bodies, which rust-s3 returns as `Ok`) maps to `Err`
+    /// so the caller can 404 instead of streaming an error document.
     pub async fn get(&self, cid: &str) -> Result<(Bytes, String), String> {
-        let mut data = self
+        let data = self
             .bucket
             .get_object(cid)
             .await
             .map_err(|e| format!("avatar storage get failed: {}", e))?;
+        if !(200..300).contains(&data.status_code()) {
+            return Err(format!(
+                "avatar storage get -> HTTP {}",
+                data.status_code()
+            ));
+        }
         let mime = data
             .headers()
             .get("content-type")
