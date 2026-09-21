@@ -566,6 +566,10 @@ pub(crate) async fn get_dpop_bytes_with_headers(
 }
 
 /// Fetch the avatar blob bytes from the user's PDS (`com.atproto.sync.getBlob`).
+///
+/// Profile blobs are public: a plain GET works everywhere and avoids the
+/// DPoP-nonce dance that hosted PDSs (e.g. bsky.network) reject with 401 on
+/// the `DPoP` auth scheme. Private blobs fall back to a DPoP-signed request.
 pub(crate) async fn fetch_avatar_blob_from_pds(
     http_client: &reqwest::Client,
     atp_access_token: &str,
@@ -574,17 +578,35 @@ pub(crate) async fn fetch_avatar_blob_from_pds(
     cid: &str,
     pds_endpoint: &str,
 ) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>> {
+    let url = format!(
+        "{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}",
+        pds_endpoint, did, cid
+    );
+
+    // Primary: unauthenticated GET (public blob). Any non-2xx falls through to
+    // the DPoP-signed attempt (private/limited blobs).
+    let response = http_client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| format!("getBlob request failed: {}", e))?;
+    if response.status().is_success() {
+        return Ok(response
+            .bytes()
+            .await
+            .map_err(|e| format!("getBlob read failed: {}", e))?);
+    }
+    tracing::debug!(
+        status = %response.status(),
+        "no-auth getBlob failed, trying DPoP-signed request"
+    );
+
     let dpop_private_key =
         identify_key(dpop_key).map_err(|e| format!("Failed to parse DPoP key: {}", e))?;
     let dpop_auth = DPoPAuth {
         dpop_private_key_data: dpop_private_key,
         oauth_access_token: atp_access_token.to_string(),
     };
-
-    let url = format!(
-        "{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}",
-        pds_endpoint, did, cid
-    );
 
     let bytes = get_dpop_bytes_with_headers(http_client, &dpop_auth, &url).await?;
     Ok(bytes)

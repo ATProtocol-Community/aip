@@ -1,67 +1,44 @@
-# AIP fork (bringyourowncomputer)
+# AIP — OIDC `picture` from the atproto profile avatar (feature branch)
 
-**Fork of [graze-social/aip](https://github.com/graze-social/aip)** (MIT) —
-our ATProtocol Identity Provider / OIDC server (deployed at
-`login.bringyourown.computer`, VM 111).
+Standalone feature on top of upstream `v2.2.3` (this repo's `main`): AIP
+mirrors the user's atproto profile avatar (`app.bsky.actor.profile` →
+`avatar` blob) into an S3-compatible store and emits the standard OIDC
+`picture` claim. Backlog: bringyourowncomputer/ovhproxmox **OVHP-117**.
 
-Why: we run atproto identity at the core, and **AIP is the login gate for the
-whole cluster** — the natural place to enforce the **network allow-list** that
-People (bringyourowncomputer/people, OVHP-87) administers.
+## What it changes
 
-## Branch layout
+- **userinfo** (profile scope + atproto session):
+  1. `com.atproto.repo.getRecord` on `app.bsky.actor.profile` (rkey `self`) of
+     the user's PDS → read the `avatar` blob ref (CID + mimeType);
+  2. `com.atproto.sync.getBlob` — an **unauthenticated GET first** (profile
+     blobs are public; hosted PDSs like bluesky.network reject DPoP-signed
+     blob fetches with 401), with a DPoP-signed fallback for private blobs;
+  3. upload the bytes to the configured **S3-compatible store keyed by the
+     blob CID** (idempotent; overwrite = identical bytes);
+  4. emit `picture` = `{EXTERNAL_BASE}/oauth/avatar/{cid}`.
+- **`GET /oauth/avatar/{cid}`** streams the stored object back through AIP
+  (the store has no anonymous reads) with the blob mimeType and an immutable
+  cache header.
+- **Fail-open everywhere:** no avatar → no `picture` claim; any fetch/storage
+  error logs a warning and omits the claim; missing storage config disables
+  the feature entirely.
 
-- **`main`** — upstream `main` (tracked; refresh upstream refs/tags here).
-- **`byoc`** — **our working branch**: `v2.2.3` (the version we deploy) +
-  local commits. Start new work here; rebase onto a newer upstream tag when
-  we bump.
-- Tags `v2.x.y` — upstream release tags (kept for reference/build pinning).
+## Env
 
-## Diff vs upstream v2.2.3 (the `byoc` delta)
+Read from the process env (not `Config`), so the feature self-disables when
+unconfigured:
 
-1. **`src/oauth/openid.rs` — `at_hash`/`c_hash` truncated to 128 bits.** Folded
-   in from the ovhproxmox deploy-time patch (`roles/aip/files/aip-at-hash.patch`):
-   upstream AIP emits the full 32-byte digest, which strict OIDC clients
-   (e.g. Grist/openid-client) reject.
-2. **Network allow-list gate (OVHP-87)** — `src/oauth/atprotocol_bridge.rs` +
-   `src/config.rs` + `src/errors.rs`:
-   - Config: `ACCESS_POLICY_ENDPOINT` (People's check URL),
-     `ACCESS_POLICY_DECISIONS_ENDPOINT` (People's decision ingest — AIP forwards
-     every login decision with handle + email — both sourced from ATProto:
-     handle from the DID doc, email fetched from the user's PDS via the atproto
-     session (same call userinfo makes)), `ACCESS_POLICY_AUTH_TOKEN`
-     (the shared bearer People requires), `ACCESS_POLICY_MODE` (`log` default |
-     `enforce`), `ACCESS_POLICY_FAIL_OPEN` (default true).
-   - In `handle_atp_callback_impl`, **after the DID is resolved, before
-     `base_auth_server.authorize`**: calls
-     `check?did=<resolved DID>&client_id=<OAuth client>` against People.
-   - `log` mode audits every decision
-     (`tracing::info! … "network_access_decision", did/client_id/allowed/rule`)
-     and never blocks; `enforce` mode refuses denied DIDs with
-     `error-aip-oauth-11` (upstream Access denied). Upstream unreachable → fail-open (unless
-     `ACCESS_POLICY_FAIL_OPEN=false`).
-   - Rollout: deploy in `log` mode, review the audit lines, then flip to
-     `enforce` once rules are pre-allowlisted.
-3. **Profile avatar → OIDC `picture` (OVHP-117).** At userinfo time (profile
-   scope + atproto session), fetch `app.bsky.actor.profile` (rkey self) from
-   the user's PDS, pull the `avatar` blob via `com.atproto.sync.getBlob`
-   (DPoP), mirror it into the cluster **Garage** (S3, `aip-avatars` bucket,
-   keyed by blob CID), and expose `picture = {external_base}/oauth/avatar/{cid}`
-   served back through AIP (Garage has no anonymous reads). Env:
-   `AVATAR_STORAGE_ENDPOINT|REGION|BUCKET|ACCESS_KEY|SECRET_KEY` (read from the
-   process env, not `Config` — feature disables itself when unconfigured).
-   Fail-open: any fetch/storage error omits the claim.
+```
+AVATAR_STORAGE_ENDPOINT=http://10.0.0.11:3900   # cluster Garage
+AVATAR_STORAGE_REGION=garage
+AVATAR_STORAGE_BUCKET=aip-avatars
+AVATAR_STORAGE_ACCESS_KEY=…
+AVATAR_STORAGE_SECRET_KEY=…
+```
 
-## Deploy
+## Scope note
 
-ovhproxmox `roles/aip` clones **this fork** at a pinned `byoc` commit and
-builds (release, sqlite, embedded templates) — the old deploy-time at_hash
-patch is no longer applied separately (it's in the fork now). Env lives in
-`/etc/aip.env` (0600) on VM 111; the allow-list token is the same
-`NETWORK_ACCESS_API_TOKEN` that gates People's check API (controller
-`~/.config/people/people-secrets.env`).
-
-## Related
-
-- OVHP-87 (allow-list design + this gate) · bringyourowncomputer/people
-  (`AccessPolicy` + check/snapshot APIs; `ADMIN_GUIDE.md`) · OVHP-91
-  (atproto-crates PDS, group DIDs).
+Only the avatar/picture feature is included here. The BYOC deployment
+additionally carries other fork work (at_hash/c_hash truncation, the People
+network allow-list gate, RFC 7662 introspection, app-password userinfo email)
+— none of that is part of this branch.
