@@ -344,7 +344,7 @@ pub async fn build_openid_claims_with_document_info(
     // Add profile information if we can provide it
     if can_provide_profile {
         let handle = document.handles().map(|h| h.to_string());
-        let pds_endpoint = document.pds_endpoints().first().cloned();
+        let pds_endpoint: Option<String> = document.pds_endpoints().first().map(|v| v.to_string());
 
         // OVHP-119: expose user-controllable identity claims —
         // preferred_username = atproto handle (no '@'), name = Bluesky profile
@@ -354,7 +354,7 @@ pub async fn build_openid_claims_with_document_info(
         if let Some(pds) = pds_endpoint.as_deref() {
             match fetch_public_profile(http_client, &document.id, pds).await {
                 Ok(Some(p)) => {
-                    let h = p.handle.or_else(|| handle.clone());
+                    let h = if p.handle.trim().is_empty() { handle.clone() } else { Some(p.handle) };
                     claims = claims
                         .with_preferred_username(h.clone())
                         .with_display_name_and_handle(p.display_name, h);
