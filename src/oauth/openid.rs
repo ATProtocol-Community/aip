@@ -127,6 +127,7 @@ impl OpenIDClaims {
             name: None,
             profile: None,
             picture: None,
+            preferred_username: None,
             pds_endpoint: None,
             email: None,
             email_verified: None,
@@ -156,6 +157,7 @@ impl OpenIDClaims {
             name: None,
             profile: None,
             picture: None,
+            preferred_username: None,
             pds_endpoint: None,
             email: None,
             email_verified: None,
@@ -226,10 +228,10 @@ impl OpenIDClaims {
         display_name: Option<String>,
         handle: Option<String>,
     ) -> Self {
-        let handle = handle.or(Some("unknown".to_string()));
+        let handle = handle.unwrap_or_else(|| "unknown".to_string());
         self.name = display_name
             .filter(|s| !s.trim().is_empty())
-            .or_else(|| Some(handle.clone()));
+            .or(Some(handle.clone()));
         if handle != "unknown" {
             self.profile = Some(format!("https://bsky.app/profile/{}", handle));
         }
