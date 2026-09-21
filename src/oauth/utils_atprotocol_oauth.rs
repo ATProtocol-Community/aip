@@ -539,16 +539,32 @@ pub(crate) async fn fetch_public_profile(
     did: &str,
     pds_endpoint: &str,
 ) -> Result<Option<PublicProfileView>, reqwest::Error> {
-    let url = format!(
+    // Prefer the account's PDS; some hosted PDSes 401 anonymous getProfile,
+    // so fall back to the public Bluesky appview (OVHP-119 polish).
+    let mut chosen: Option<PublicProfileView> = None;
+    let pds_url = format!(
         "{}/xrpc/app.bsky.actor.getProfile?actor={}",
         pds_endpoint, did
     );
-    let resp = http_client.get(&url).send().await?;
-    if !resp.status().is_success() {
-        return Ok(None);
+    if let Ok(resp) = http_client.get(&pds_url).send().await
+        && resp.status().is_success()
+        && let Ok(view) = resp.json::<PublicProfileView>().await
+        && !view.display_name.as_deref().unwrap_or("").trim().is_empty()
+    {
+        chosen = Some(view);
     }
-    let view: PublicProfileView = resp.json().await?;
-    Ok(Some(view))
+    if chosen.is_none() {
+        let appview_url = format!(
+            "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor={}",
+            did
+        );
+        if let Ok(resp) = http_client.get(&appview_url).send().await
+            && resp.status().is_success()
+        {
+            chosen = resp.json::<Option<PublicProfileView>>().await?;
+        }
+    }
+    Ok(chosen)
 }
 
 /// Fetch the user's atproto profile record from their PDS (OVHP-117).
