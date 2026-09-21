@@ -54,6 +54,11 @@ pub struct OpenIDClaims {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile: Option<String>,
 
+    /// Picture - the user's profile picture URL (mirrored from their atproto
+    /// profile `app.bsky.actor.profile` avatar blob; OVHP-117)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+
     /// PDS endpoint - The user's PDS endpoint from the DID document
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pds_endpoint: Option<String>,
@@ -116,6 +121,7 @@ impl OpenIDClaims {
             did: None,
             name: None,
             profile: None,
+            picture: None,
             pds_endpoint: None,
             email: None,
             additional_claims: HashMap::new(),
@@ -143,6 +149,7 @@ impl OpenIDClaims {
             did: None,
             name: None,
             profile: None,
+            picture: None,
             pds_endpoint: None,
             email: None,
             additional_claims: HashMap::new(),
@@ -213,6 +220,12 @@ impl OpenIDClaims {
     /// Set email
     pub fn with_email(mut self, email: Option<String>) -> Self {
         self.email = email;
+        self
+    }
+
+    /// Set picture URL (profile avatar mirrored to S3/Garage, OVHP-117).
+    pub fn with_picture(mut self, picture: Option<String>) -> Self {
+        self.picture = picture;
         self
     }
 

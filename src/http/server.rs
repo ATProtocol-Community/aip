@@ -18,6 +18,7 @@ use super::{
     handler_atprotocol_oauth_authorize::handle_oauth_authorize,
     handler_atprotocol_oauth_callback::handle_atpoauth_callback,
     handler_atprotocol_session::get_atprotocol_session_handler,
+    handler_avatar::handle_avatar,
     handler_device_authorization::{
         device_authorization_page, device_authorize, device_oauth_callback,
     },
@@ -58,6 +59,7 @@ pub fn build_router(ctx: AppState) -> Router {
         .route("/authorize", get(handle_oauth_authorize))
         .route("/authorize/app-password", post(handle_app_password_login))
         .route("/token", post(handle_oauth_token))
+        .route("/avatar/{cid}", get(handle_avatar))
         .route("/device", post(device_authorization_handler))
         .route("/userinfo", get(get_userinfo_handler))
         .route("/userinfo", post(get_userinfo_handler))
