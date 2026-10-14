@@ -32,7 +32,11 @@ RUN cargo build --release --bin aip --no-default-features --features ${FEATURES}
 # Build the client management CLI
 RUN cargo build --release --bin aip-client-management --no-default-features --features ${FEATURES}
 # Add the sqlx cli for running migrations in containers
-RUN cargo install sqlx-cli --root /app/.cargo --no-default-features --features native-tls,postgres
+# NOTE (CIC, 2026-10-14): pin the sqlx-cli version to match the app's sqlx
+# dep (0.8.x). The unpinned `cargo install sqlx-cli` pulls 0.9.0, which
+# requires rustc 1.94 — newer than the 1.91 builder image — breaking the
+# build. Bump together with Cargo.toml's sqlx version.
+RUN cargo install sqlx-cli --version 0.8.6 --root /app/.cargo --no-default-features --features native-tls,postgres
 
 # Runtime stage using distroless
 FROM gcr.io/distroless/cc-debian12
