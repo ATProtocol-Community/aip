@@ -55,13 +55,23 @@ jobs:
       - name: Make container package public
         if: always()
         run: |
-          for url in \
-            https://api.github.com/orgs/ATProtocol-Community/packages/container/aip/visibility \
-            https://api.github.com/user/packages/container/aip/visibility; do
-            resp=$(curl -fsS -X POST \
-              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "$url" \
-              -d '{"visibility": "public"}' 2>&1) && { echo "public via $url"; break; } \
-              || echo "visibility attempt failed on $url: $resp"
-          done || true
+          set +e
+          # try repo/org-scoped routes; gh api resolves the right namespace
+          out=$(gh api \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            /orgs/ATProtocol-Community/packages/container/aip/visibility \
+            -f visibility=public 2>&1)
+          echo "org route: $out"
+          if echo "$out" | grep -q '"visibility":"public"'; then
+            echo "package is public"
+            exit 0
+          fi
+          out2=$(gh api \
+            -X POST \
+            -H "Accept: application/vnd.github+json" \
+            /user/packages/container/aip/visibility \
+            -f visibility=public 2>&1)
+          echo "user route: $out2"
+          echo "::warning::GHCR visibility could not be set automatically — set it manually at https://github.com/orgs/ATProtocol-Community/packages"
+          exit 0
