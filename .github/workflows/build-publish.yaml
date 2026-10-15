@@ -58,23 +58,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          echo "== discover repo packages (name) =="
+          PKG_NAME=aip
           rpkgs=$(gh api '/repos/ATProtocol-Community/aip/packages?package_type=container' 2>&1)
-          echo "$rpkgs"
-          PKG_NAME=$(echo "$rpkgs" | python3 -c "
-import json,sys
-try:
-    d=json.load(sys.stdin)
-    print(d[0]['name'] if d else '')
-except Exception:
-    print('')
-" 2>/dev/null)
+          echo "repo packages: $rpkgs"
+          JSON_NAME=$(gh api '/repos/ATProtocol-Community/aip/packages?package_type=container' --jq '.[0].name // empty' 2>/dev/null)
+          [ -n "$JSON_NAME" ] && PKG_NAME="$JSON_NAME"
           echo "PKG_NAME=$PKG_NAME"
-          if [ -z "$PKG_NAME" ]; then PKG_NAME=aip; fi
-          echo "== attempt visibility (name=$PKG_NAME) =="
-          for route in \
-            "/orgs/ATProtocol-Community/packages/container/$PKG_NAME/visibility" \
-            "/user/packages/container/$PKG_NAME/visibility"; do
-            echo "-- $route"
+          for route in "/orgs/ATProtocol-Community/packages/container/$PKG_NAME/visibility" "/user/packages/container/$PKG_NAME/visibility"; do
+            echo "-- route: $route"
             gh api -X POST -H "Accept: application/vnd.github+json" "$route" -f visibility=public 2>&1 | head -20
           done
+          echo "::warning::If neither route worked, set visibility manually at https://github.com/orgs/ATProtocol-Community/packages"
