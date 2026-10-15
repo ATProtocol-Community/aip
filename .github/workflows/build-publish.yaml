@@ -54,6 +54,8 @@ jobs:
       # the workflow token (packages:write on this repo).
       - name: Make container package public
         if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
           # try repo/org-scoped routes; gh api resolves the right namespace
