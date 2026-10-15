@@ -3,6 +3,7 @@
 {% block head %}
 <meta property="og:title" content="AIP - ATProtocol Identity Provider">
 <meta name="description" content="AIP - ATProtocol Identity Provider for managing OAuth and app-passwords">
+<script src="/static/typeahead.js" defer></script>
 {% endblock %}
 {% block content %}
 <header>
@@ -28,6 +29,8 @@
                         name="login_hint" 
                         placeholder="user.bsky.social or did:plc:..." 
                         required
+                        autocomplete="off"
+                        data-typeahead
                         title="Enter a handle (e.g., user.bsky.social) or DID (e.g., did:plc:...)"
                     >
                 </label>
