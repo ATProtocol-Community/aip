@@ -58,22 +58,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          # try repo/org-scoped routes; gh api resolves the right namespace
-          out=$(gh api \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            /orgs/ATProtocol-Community/packages/container/aip/visibility \
-            -f visibility=public 2>&1)
-          echo "org route: $out"
-          if echo "$out" | grep -q '"visibility":"public"'; then
-            echo "package is public"
-            exit 0
-          fi
-          out2=$(gh api \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            /user/packages/container/aip/visibility \
-            -f visibility=public 2>&1)
-          echo "user route: $out2"
-          echo "::warning::GHCR visibility could not be set automatically — set it manually at https://github.com/orgs/ATProtocol-Community/packages"
-          exit 0
+          echo "== discover repo packages (name) =="
+          rpkgs=$(gh api '/repos/ATProtocol-Community/aip/packages?package_type=container' 2>&1)
+          echo "$rpkgs"
+          PKG_NAME=$(echo "$rpkgs" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(d[0]['name'] if d else '')
+except Exception:
+    print('')
+" 2>/dev/null)
+          echo "PKG_NAME=$PKG_NAME"
+          if [ -z "$PKG_NAME" ]; then PKG_NAME=aip; fi
+          echo "== attempt visibility (name=$PKG_NAME) =="
+          for route in \
+            "/orgs/ATProtocol-Community/packages/container/$PKG_NAME/visibility" \
+            "/user/packages/container/$PKG_NAME/visibility"; do
+            echo "-- $route"
+            gh api -X POST -H "Accept: application/vnd.github+json" "$route" -f visibility=public 2>&1 | head -20
+          done
