@@ -48,3 +48,20 @@ jobs:
             GIT_HASH=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # GHCR packages default to private even on public repos. The VM pulls
+      # anonymously (no registry creds), so flip visibility to public using
+      # the workflow token (packages:write on this repo).
+      - name: Make container package public
+        if: always()
+        run: |
+          for url in \
+            https://api.github.com/orgs/ATProtocol-Community/packages/container/aip/visibility \
+            https://api.github.com/user/packages/container/aip/visibility; do
+            resp=$(curl -fsS -X POST \
+              -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "$url" \
+              -d '{"visibility": "public"}' 2>&1) && { echo "public via $url"; break; } \
+              || echo "visibility attempt failed on $url: $resp"
+          done || true
