@@ -101,6 +101,19 @@ impl AvatarStorage {
         Ok(())
     }
 
+    /// Whether the object for this CID is already stored.
+    ///
+    /// Objects are keyed by their atproto blob CID, which is a content hash, so
+    /// an existing key is by definition byte-identical to what the PDS would
+    /// return. Callers use this to skip the PDS `getBlob` round-trip and the
+    /// re-upload on every userinfo call (aip#4).
+    pub async fn exists(&self, cid: &str) -> bool {
+        match self.bucket.head_object(cid).await {
+            Ok((_, status)) => (200..300).contains(&status),
+            Err(_) => false,
+        }
+    }
+
     /// Fetch an object; returns `(bytes, content_type)`. Non-2xx (including
     /// Garage XML error bodies, which rust-s3 returns as `Ok`) maps to `Err`
     /// so the caller can 404 instead of streaming an error document.

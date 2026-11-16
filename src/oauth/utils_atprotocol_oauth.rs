@@ -1,6 +1,7 @@
 //! ATProtocol OAuth server configuration utilities.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration as StdDuration, Instant};
 
 use bytes::Bytes;
 use crate::http::AppState;
@@ -16,6 +17,7 @@ use chrono::{Duration, Utc};
 use reqwest::header::HeaderMap;
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::collections::HashMap;
 
 /// Create ATProtocol-backed authorization server
 pub async fn create_atp_backed_server(
@@ -349,47 +351,174 @@ pub async fn build_openid_claims_with_document_info(
         return Ok(claims);
     }
 
-    // Add profile information if we can provide it
-    if can_provide_profile {
-        let handle = document.handles().map(|h| h.to_string());
-        let pds_endpoint: Option<String> = document.pds_endpoints().first().map(|v| v.to_string());
-
-        // OVHP-119: expose user-controllable identity claims —
-        // preferred_username = atproto handle (no '@'), name = Bluesky profile
-        // display name (fallback: handle). Prefer the PDS public profile
-        // (app.bsky.actor.getProfile needs no auth — also works for
-        // app-password logins); fall back to the DID-document handle.
-        if let Some(pds) = pds_endpoint.as_deref() {
-            match fetch_public_profile(http_client, &document.id, pds).await {
-                Ok(Some(p)) => {
-                    let h = if p.handle.trim().is_empty() { handle.clone() } else { Some(p.handle) };
-                    claims = claims
-                        .with_preferred_username(h.clone())
-                        .with_display_name_and_handle(p.display_name, h);
-                }
-                _ => {
-                    claims = claims
-                        .with_preferred_username(handle.clone())
-                        .with_display_name_and_handle(None, handle);
-                }
-            }
-        } else {
-            claims = claims
-                .with_preferred_username(handle.clone())
-                .with_display_name_and_handle(None, handle);
+    // Profile and email are independent remote lookups (aip#4): resolve them
+    // concurrently instead of sequentially so their latencies don't add up.
+    let profile_task = async {
+        if !can_provide_profile {
+            return None;
         }
-        claims = claims.with_pds_endpoint(pds_endpoint);
+        Some(resolve_profile_claims(http_client, document, session).await)
+    };
+    let email_task = async {
+        if !can_provide_email {
+            return None;
+        }
+        match session {
+            Some(session) => Some(resolve_email_claims(http_client, document, session).await),
+            None => None,
+        }
+    };
+    let (profile_claims, email_claims) = tokio::join!(profile_task, email_task);
+
+    if let Some(profile) = profile_claims {
+        claims = claims
+            .with_preferred_username(profile.handle.clone())
+            .with_display_name_and_handle(profile.display_name, profile.handle)
+            .with_picture(profile.picture);
+    }
+
+    if can_provide_profile {
+        claims = claims.with_pds_endpoint(document.pds_endpoints().first().map(|v| v.to_string()));
+    }
+
+    // Email read failures have always been fatal to this endpoint — keep that.
+    if let Some(email_result) = email_claims {
+        let (email, email_verified) = email_result?;
+        if email.is_some() {
+            claims = claims.with_email(email).with_email_verified(email_verified);
+        }
+    }
+
+    Ok(claims)
+}
+
+// ---------------------------------------------------------------------------
+// userinfo claims cache (aip#4)
+//
+// Building userinfo means fetching the profile *and* avatar from the user's
+// own PDS and the email via a DPoP getSession — several cross-internet
+// round-trips to hosts we don't control (e.g. bmann.ca lives on Bluesky's
+// morel.us-east host). Measured 1-9s per call, which overruns consumer OIDC
+// timeouts (Lasuite defaults to 3s) and intermittently 500s logins.
+//
+// These values change rarely, so cache the *remote* results per DID behind a
+// short TTL. A miss reproduces the previous behaviour exactly; a hit does no
+// remote work at all.
+// ---------------------------------------------------------------------------
+
+/// Default TTL for cached userinfo identity claims.
+const DEFAULT_USERINFO_CACHE_TTL_SECONDS: u64 = 300;
+/// Hard cap on cached DIDs per map — clearing wholesale is fine at this scale.
+const MAX_CACHE_ENTRIES: usize = 4096;
+
+/// Remote identity claims for one DID (everything userinfo must ask a PDS for).
+#[derive(Clone, Debug, Default)]
+struct ProfileClaims {
+    /// preferred_username — the atproto handle (no '@')
+    handle: Option<String>,
+    /// name — the Bluesky profile display name
+    display_name: Option<String>,
+    /// picture — AIP-hosted mirror of the profile avatar
+    picture: Option<String>,
+}
+
+struct CacheEntry<T> {
+    stored_at: Instant,
+    value: T,
+}
+
+static PROFILE_CACHE: OnceLock<Mutex<HashMap<String, CacheEntry<ProfileClaims>>>> = OnceLock::new();
+#[allow(clippy::type_complexity)]
+static EMAIL_CACHE: OnceLock<
+    Mutex<HashMap<String, CacheEntry<(Option<String>, Option<bool>)>>>,
+> = OnceLock::new();
+
+/// Cache TTL from `USERINFO_CACHE_TTL_SECONDS` (default 300s; `0` disables).
+fn cache_ttl() -> StdDuration {
+    std::env::var("USERINFO_CACHE_TTL_SECONDS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(StdDuration::from_secs)
+        .unwrap_or(StdDuration::from_secs(DEFAULT_USERINFO_CACHE_TTL_SECONDS))
+}
+
+fn cache_lookup<T: Clone>(cache: &Mutex<HashMap<String, CacheEntry<T>>>, did: &str) -> Option<T> {
+    let ttl = cache_ttl();
+    if ttl.is_zero() {
+        return None;
+    }
+    let guard = cache.lock().ok()?;
+    let entry = guard.get(did)?;
+    if entry.stored_at.elapsed() > ttl {
+        return None;
+    }
+    Some(entry.value.clone())
+}
+
+fn cache_store<T>(cache: &Mutex<HashMap<String, CacheEntry<T>>>, did: &str, value: T) {
+    if cache_ttl().is_zero() {
+        return;
+    }
+    if let Ok(mut guard) = cache.lock() {
+        if guard.len() >= MAX_CACHE_ENTRIES {
+            guard.clear();
+        }
+        guard.insert(
+            did.to_string(),
+            CacheEntry {
+                stored_at: Instant::now(),
+                value,
+            },
+        );
+    }
+}
+
+/// Profile claims (handle / display name / avatar) for a DID — cache first,
+/// otherwise the remote fetches once (aip#4).
+async fn resolve_profile_claims(
+    http_client: &reqwest::Client,
+    document: &Document,
+    session: Option<&AtpOAuthSession>,
+) -> ProfileClaims {
+    let cache = PROFILE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache_lookup(cache, &document.id) {
+        tracing::debug!(did = %document.id, "userinfo: profile claims cache hit");
+        return hit;
+    }
+
+    let started = Instant::now();
+    let mut profile = ProfileClaims::default();
+    let doc_handle = document.handles().map(|h| h.to_string());
+    let pds_endpoint: Option<String> = document.pds_endpoints().first().map(|v| v.to_string());
+
+    // OVHP-119: preferred_username = atproto handle (no '@'), name = Bluesky
+    // profile display name (fallback: handle). Prefer the PDS public profile
+    // (app.bsky.actor.getProfile needs no auth — also works for app-password
+    // logins); fall back to the DID-document handle.
+    if let Some(pds) = pds_endpoint.as_deref() {
+        match fetch_public_profile(http_client, &document.id, pds).await {
+            Ok(Some(p)) => {
+                profile.handle = if p.handle.trim().is_empty() {
+                    doc_handle
+                } else {
+                    Some(p.handle)
+                };
+                profile.display_name = p.display_name;
+            }
+            _ => profile.handle = doc_handle,
+        }
+    } else {
+        profile.handle = doc_handle;
     }
 
     // OVHP-117: mirror the profile avatar into the cluster Garage (S3) and
     // expose the standard OIDC `picture` claim. Fail-open: any fetch/storage
     // error omits the claim — userinfo never blocks on the avatar.
-    if can_provide_profile
-        && let Some(session) = session
-        && let Some((atp_access_token, pds_endpoint)) = session
-            .access_token
-            .as_deref()
-            .zip(document.pds_endpoints().first())
+    //
+    // aip#4: avatars are content-addressed by CID, so when the object is
+    // already in Garage we skip both the PDS getBlob and the re-upload.
+    if let (Some(session), Some(pds_endpoint)) = (session, pds_endpoint.as_deref())
+        && let Some(atp_access_token) = session.access_token.as_deref()
         && let Some(storage) = crate::oauth::avatar_storage::AvatarStorage::from_env()
     {
         match fetch_profile_from_pds(
@@ -401,30 +530,39 @@ pub async fn build_openid_claims_with_document_info(
         )
         .await
         {
-            Ok(profile) => {
-                if let Some(avatar) = profile.value.avatar {
+            Ok(record) => {
+                if let Some(avatar) = record.value.avatar {
                     let cid = avatar.reference.link;
-                    match fetch_avatar_blob_from_pds(
-                        http_client,
-                        atp_access_token,
-                        &session.dpop_key,
-                        &document.id,
-                        &cid,
-                        pds_endpoint,
-                    )
-                    .await
-                    {
-                        Ok(bytes) => {
-                            if let Err(e) = storage.put(&cid, &bytes, &avatar.mime_type).await {
-                                tracing::warn!(error = %e, did = %document.id, "avatar storage put failed");
-                            } else if let Some(url) =
-                                crate::oauth::avatar_storage::picture_url(&cid)
-                            {
-                                claims = claims.with_picture(Some(url));
+                    if storage.exists(&cid).await {
+                        tracing::debug!(
+                            cid = %cid,
+                            did = %document.id,
+                            "userinfo: avatar already stored, skipped PDS blob fetch"
+                        );
+                        profile.picture = crate::oauth::avatar_storage::picture_url(&cid);
+                    } else {
+                        match fetch_avatar_blob_from_pds(
+                            http_client,
+                            atp_access_token,
+                            &session.dpop_key,
+                            &document.id,
+                            &cid,
+                            pds_endpoint,
+                        )
+                        .await
+                        {
+                            Ok(bytes) => {
+                                if let Err(e) = storage.put(&cid, &bytes, &avatar.mime_type).await
+                                {
+                                    tracing::warn!(error = %e, did = %document.id, "avatar storage put failed");
+                                } else {
+                                    profile.picture =
+                                        crate::oauth::avatar_storage::picture_url(&cid);
+                                }
                             }
-                        }
-                        Err(e) => {
-                            tracing::warn!(error = %e, did = %document.id, "avatar blob fetch failed");
+                            Err(e) => {
+                                tracing::warn!(error = %e, did = %document.id, "avatar blob fetch failed");
+                            }
                         }
                     }
                 }
@@ -435,28 +573,53 @@ pub async fn build_openid_claims_with_document_info(
         }
     }
 
-    // Add email information if we can provide it
-    if can_provide_email && let Some(session) = session {
-        let (email, email_verified) = if let (Some(atp_access_token), Some(pds_endpoint)) =
-            (&session.access_token, document.pds_endpoints().first())
-        {
-            fetch_email_from_pds(
-                http_client,
-                atp_access_token,
-                &session.dpop_key,
-                pds_endpoint,
-            )
-            .await?
-        } else {
-            (None, None)
-        };
-        if email.is_some() {
-            claims = claims.with_email(email).with_email_verified(email_verified);
-        }
+    tracing::debug!(
+        did = %document.id,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "userinfo: profile claims resolved remotely"
+    );
+    cache_store(cache, &document.id, profile.clone());
+    profile
+}
+
+/// Email claims for a DID — cache first, otherwise one DPoP `getSession`
+/// (aip#4). Errors are not cached and propagate as before.
+async fn resolve_email_claims(
+    http_client: &reqwest::Client,
+    document: &Document,
+    session: &AtpOAuthSession,
+) -> Result<(Option<String>, Option<bool>), Box<dyn std::error::Error + Send + Sync>> {
+    let cache = EMAIL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(hit) = cache_lookup(cache, &document.id) {
+        tracing::debug!(did = %document.id, "userinfo: email claims cache hit");
+        return Ok(hit);
     }
 
-    Ok(claims)
+    let pds_endpoints = document.pds_endpoints();
+    let Some(pds_endpoint) = pds_endpoints.first() else {
+        return Ok((None, None));
+    };
+    let Some(atp_access_token) = session.access_token.as_deref() else {
+        return Ok((None, None));
+    };
+
+    let started = Instant::now();
+    let result = fetch_email_from_pds(
+        http_client,
+        atp_access_token,
+        &session.dpop_key,
+        pds_endpoint,
+    )
+    .await?;
+    tracing::debug!(
+        did = %document.id,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "userinfo: email claims resolved from PDS"
+    );
+    cache_store(cache, &document.id, result.clone());
+    Ok(result)
 }
+
 
 /// ATProtocol getSession response
 #[derive(Debug, Deserialize)]
@@ -901,5 +1064,50 @@ mod tests {
         assert!(client_config.tos_uri.is_none());
         assert!(client_config.policy_uri.is_none());
         assert!(client_config.signing_keys.is_empty());
+    }
+
+    // --- aip#4: userinfo claims cache -------------------------------------
+
+    #[test]
+    fn test_userinfo_cache_roundtrip() {
+        if cache_ttl().is_zero() {
+            return; // cache disabled via env — nothing to assert
+        }
+        let cache: Mutex<HashMap<String, CacheEntry<ProfileClaims>>> = Mutex::new(HashMap::new());
+        let claims = ProfileClaims {
+            handle: Some("alice.test".to_string()),
+            display_name: Some("Alice".to_string()),
+            picture: Some("https://login.example/oauth/avatar/bafkrei".to_string()),
+        };
+
+        assert!(cache_lookup(&cache, "did:plc:alice").is_none(), "cold cache");
+        cache_store(&cache, "did:plc:alice", claims.clone());
+
+        let hit = cache_lookup(&cache, "did:plc:alice").expect("warm cache hit");
+        assert_eq!(hit.handle.as_deref(), Some("alice.test"));
+        assert_eq!(hit.display_name.as_deref(), Some("Alice"));
+        assert!(hit.picture.is_some());
+
+        // Per-DID isolation.
+        assert!(cache_lookup(&cache, "did:plc:bob").is_none());
+    }
+
+    #[test]
+    fn test_userinfo_cache_expiry() {
+        if cache_ttl().is_zero() {
+            return;
+        }
+        let cache: Mutex<HashMap<String, CacheEntry<ProfileClaims>>> = Mutex::new(HashMap::new());
+        cache.lock().unwrap().insert(
+            "did:plc:stale".to_string(),
+            CacheEntry {
+                stored_at: Instant::now() - StdDuration::from_secs(3600),
+                value: ProfileClaims::default(),
+            },
+        );
+        assert!(
+            cache_lookup(&cache, "did:plc:stale").is_none(),
+            "entries older than the TTL must not be served"
+        );
     }
 }
