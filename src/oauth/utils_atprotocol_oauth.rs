@@ -381,11 +381,23 @@ pub async fn build_openid_claims_with_document_info(
         claims = claims.with_pds_endpoint(document.pds_endpoints().first().map(|v| v.to_string()));
     }
 
-    // Email read failures have always been fatal to this endpoint — keep that.
+    // Email read failures must NOT fail the whole response (aip#7): a user
+    // whose PDS rejects the DPoP session (e.g. `InvalidToken`) would otherwise
+    // be locked out of every app — profile and avatar are already fail-open.
+    // Apps identify users by `sub` = DID
+    // (`OIDC_FALLBACK_TO_EMAIL_FOR_IDENTIFICATION=False`), so a missing email
+    // only costs invites/notifications.
     if let Some(email_result) = email_claims {
-        let (email, email_verified) = email_result?;
-        if email.is_some() {
-            claims = claims.with_email(email).with_email_verified(email_verified);
+        match email_result {
+            Ok((Some(email), email_verified)) => {
+                claims = claims.with_email(Some(email)).with_email_verified(email_verified);
+            }
+            Ok((None, _)) => {}
+            Err(e) => tracing::warn!(
+                did = %document.id,
+                error = %e,
+                "userinfo: email fetch failed, omitting the email claim"
+            ),
         }
     }
 
