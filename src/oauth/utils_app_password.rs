@@ -29,7 +29,6 @@ struct CreateSessionResponse {
     email_confirmed: bool,
 }
 
-
 /// Create a new app-password session using ATProtocol createSession XRPC
 ///
 /// This function authenticates with a PDS using an app-password and creates
@@ -53,6 +52,9 @@ pub async fn create_app_password_session(
     app_password: &str,
     pds_endpoint: &str,
 ) -> Result<AppPasswordSession, Box<dyn std::error::Error + Send + Sync>> {
+    // The PDS endpoint comes from a DID document that anyone can publish.
+    crate::oauth::atprotocol_trust::validate_remote_endpoint(pds_endpoint)?;
+
     let create_session_url = format!("{}/xrpc/com.atproto.server.createSession", pds_endpoint);
 
     let request_body = CreateSessionRequest {
@@ -414,6 +416,7 @@ mod tests {
             database_url: None,
             redis_url: None,
             enable_client_api: false,
+            allow_private_network_requests: false,
             client_default_access_token_expiration: "1d".to_string().try_into().unwrap(),
             client_default_refresh_token_expiration: "14d".to_string().try_into().unwrap(),
             admin_dids: "".to_string().try_into().unwrap(),
