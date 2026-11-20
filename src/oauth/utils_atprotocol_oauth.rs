@@ -429,9 +429,17 @@ pub async fn build_openid_claims_with_document_info(
         }
     }
 
-    // Add email information if we can provide it
+    // Add email information if we can provide it.
+    //
+    // A failed email fetch must NOT fail the whole response: a user whose PDS
+    // rejects the DPoP session (e.g. `InvalidToken` from
+    // com.atproto.server.getSession) would otherwise be locked out of every
+    // app, retrying forever. Profile and avatar are already fail-open, and
+    // relying parties identify users by `sub` = DID
+    // (e.g. OIDC_FALLBACK_TO_EMAIL_FOR_IDENTIFICATION=False), so a missing
+    // email only costs invites/notifications.
     if can_provide_email && let Some(session) = session {
-        let email = if let (Some(atp_access_token), Some(pds_endpoint)) =
+        let email_result = if let (Some(atp_access_token), Some(pds_endpoint)) =
             (&session.access_token, document.pds_endpoints().first())
         {
             fetch_email_from_pds(
@@ -440,12 +448,18 @@ pub async fn build_openid_claims_with_document_info(
                 &session.dpop_key,
                 pds_endpoint,
             )
-            .await?
+            .await
         } else {
-            None
+            Ok(None)
         };
-        if email.is_some() {
-            claims = claims.with_email(email);
+        match email_result {
+            Ok(Some(email)) => claims = claims.with_email(Some(email)),
+            Ok(None) => {}
+            Err(e) => tracing::warn!(
+                did = %document.id,
+                error = %e,
+                "userinfo: email fetch failed, omitting the email claim"
+            ),
         }
     }
 
