@@ -98,7 +98,11 @@ pub async fn handle_introspect(
         .oauth_storage
         .get_client(&client_auth.client_id)
         .await
-        .map_err(|e| server_error(&e.to_string()))?
+        .map_err(|e| {
+            // Storage detail stays in the log; callers get a fixed message.
+            tracing::warn!(error = %e, "introspection: client lookup failed");
+            server_error("Internal error handling the introspection request")
+        })?
         .ok_or_else(|| invalid_client("Unknown client"))?;
 
     if client.token_endpoint_auth_method == ClientAuthMethod::None {
@@ -277,6 +281,7 @@ mod tests {
             access_policy_auth_token: None,
             access_policy_mode: "log".to_string(),
             access_policy_fail_open: true,
+            allow_private_network_requests: false,
         });
 
         let atp_session_storage = Arc::new(

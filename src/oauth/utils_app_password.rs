@@ -128,6 +128,10 @@ pub async fn fetch_account_email_with_app_password(
     app_password: &str,
     pds_endpoint: &str,
 ) -> Result<(Option<String>, Option<bool>), Box<dyn std::error::Error + Send + Sync>> {
+    // byoc fork: the PDS endpoint comes from a DID document that anyone can
+    // publish — same pre-request check as create_app_password_session.
+    crate::oauth::atprotocol_trust::validate_remote_endpoint(pds_endpoint)?;
+
     let create_session_url = format!("{}/xrpc/com.atproto.server.createSession", pds_endpoint);
 
     let request_body = CreateSessionRequest {
@@ -176,6 +180,9 @@ pub async fn refresh_app_password_session(
     session: &AppPasswordSession,
     pds_endpoint: &str,
 ) -> Result<AppPasswordSession, Box<dyn std::error::Error + Send + Sync>> {
+    // The PDS endpoint comes from a DID document that anyone can publish.
+    crate::oauth::atprotocol_trust::validate_remote_endpoint(pds_endpoint)?;
+
     let now = Utc::now();
     let new_iteration = session.iteration + 1;
 
@@ -518,5 +525,32 @@ mod tests {
 
         assert!(retrieved.is_some());
         assert_eq!(retrieved.unwrap().app_password, "test-password-123");
+    }
+
+    /// byoc fork: the app-password email helper must refuse a PDS endpoint
+    /// taken from an untrusted DID document before making a request.
+    #[tokio::test]
+    async fn email_helper_rejects_non_public_pds_endpoints() {
+        let http_client = reqwest::Client::new();
+
+        for endpoint in [
+            "http://10.0.0.15:3000",
+            "https://localhost",
+            "https://pds.internal",
+        ] {
+            let result = fetch_account_email_with_app_password(
+                &http_client,
+                "did:plc:test123",
+                "app-password",
+                endpoint,
+            )
+            .await;
+
+            let error = result.expect_err("non-public PDS endpoint must be rejected");
+            assert!(
+                error.to_string().contains("error-aip-trust"),
+                "{endpoint} rejected for the wrong reason: {error}"
+            );
+        }
     }
 }
