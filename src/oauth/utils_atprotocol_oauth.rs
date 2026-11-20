@@ -548,7 +548,17 @@ pub(crate) async fn fetch_public_profile(
         "{}/xrpc/app.bsky.actor.getProfile?actor={}",
         pds_endpoint, did
     );
-    if let Ok(resp) = http_client.get(&pds_url).send().await
+    // The PDS endpoint comes from a DID document — skip the PDS attempt unless
+    // it is a public https endpoint (fail-open to appview).
+    let pds_allowed = match crate::oauth::atprotocol_trust::validate_remote_endpoint(pds_endpoint) {
+        Ok(()) => true,
+        Err(e) => {
+            tracing::warn!(error = %e, "userinfo: skipping non-public PDS endpoint");
+            false
+        }
+    };
+    if pds_allowed
+        && let Ok(resp) = http_client.get(&pds_url).send().await
         && resp.status().is_success()
         && let Ok(view) = resp.json::<PublicProfileView>().await
         && !view.display_name.as_deref().unwrap_or("").trim().is_empty()
@@ -577,6 +587,9 @@ pub(crate) async fn fetch_profile_from_pds(
     did: &str,
     pds_endpoint: &str,
 ) -> Result<AtpProfileRecord, Box<dyn std::error::Error + Send + Sync>> {
+    // The PDS endpoint comes from a DID document — check it before any request.
+    crate::oauth::atprotocol_trust::validate_remote_endpoint(pds_endpoint)?;
+
     let dpop_private_key =
         identify_key(dpop_key).map_err(|e| format!("Failed to parse DPoP key: {}", e))?;
     let dpop_auth = DPoPAuth {
@@ -647,6 +660,9 @@ pub(crate) async fn fetch_avatar_blob_from_pds(
     cid: &str,
     pds_endpoint: &str,
 ) -> Result<Bytes, Box<dyn std::error::Error + Send + Sync>> {
+    // The PDS endpoint comes from a DID document — check it before any request.
+    crate::oauth::atprotocol_trust::validate_remote_endpoint(pds_endpoint)?;
+
     let url = format!(
         "{}/xrpc/com.atproto.sync.getBlob?did={}&cid={}",
         pds_endpoint, did, cid
@@ -888,5 +904,45 @@ mod tests {
         assert!(client_config.tos_uri.is_none());
         assert!(client_config.policy_uri.is_none());
         assert!(client_config.signing_keys.is_empty());
+    }
+
+    /// Every PDS call site that takes its endpoint from a DID document must
+    /// reject non-public endpoints before making a request.
+    #[tokio::test]
+    async fn pds_helpers_reject_non_public_endpoints() {
+        let http_client = reqwest::Client::new();
+
+        for endpoint in [
+            "http://10.0.0.15:3000",
+            "https://localhost",
+            "https://pds.internal",
+        ] {
+            let profile = fetch_profile_from_pds(
+                &http_client,
+                "token",
+                "not-a-key",
+                "did:plc:x",
+                endpoint,
+            )
+            .await;
+            assert!(
+                profile.is_err(),
+                "fetch_profile_from_pds accepted {endpoint}"
+            );
+
+            let blob = fetch_avatar_blob_from_pds(
+                &http_client,
+                "token",
+                "not-a-key",
+                "did:plc:x",
+                "bafyrei",
+                endpoint,
+            )
+            .await;
+            assert!(
+                blob.is_err(),
+                "fetch_avatar_blob_from_pds accepted {endpoint}"
+            );
+        }
     }
 }
